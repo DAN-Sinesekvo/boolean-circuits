@@ -21,8 +21,6 @@
     padding:8px 12px;font-size:.9rem;
   }
   button{cursor:pointer;background:var(--accent);color:#04202f;font-weight:600;border:none;}
-  button.secondary{background:var(--panel2);color:var(--text);border:1px solid #334155;}
-  button.secondary.active{background:var(--accent);color:#04202f;}
   button:hover{opacity:.9;}
   .tabs{display:flex;gap:8px;margin-bottom:12px;}
   .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:var(--panel2);cursor:pointer;color:var(--muted);}
@@ -63,8 +61,9 @@
       <option value="2">2</option>
       <option value="3" selected>3</option>
       <option value="4">4</option>
+      <option value="5">5</option>
     </select>
-    <span class="note">(K-map is drawn for 2–4 variables; the minimizer engine itself works for more, but the grid is capped here for clarity)</span>
+    <span class="note">(truth table supports up to 5 variables manually; expressions can use up to 6 — the K-map for 5–6 variables is a single grid extended to 3 variables per side, rather than multiple side-by-side maps)</span>
   </div>
 
   <div id="pane-truth">
@@ -74,11 +73,12 @@
 
   <div id="pane-expr" class="hidden">
     <p class="note">
-      Use single letters as variables (A, B, C, D). Operators:
+      Use single letters as variables (A, B, C, D, E, F — up to 6). Operators:
       NOT = <code>!</code> or trailing <code>'</code>, AND = <code>.</code> or just juxtaposition (<code>AB</code>),
       OR = <code>+</code>, XOR = <code>^</code>. Parentheses allowed. Example: <code>A'B + AC' + (B^C)</code>
     </p>
     <input type="text" id="exprInput" placeholder="e.g. A'B + AC' + BC" style="width:100%;max-width:480px;">
+    <p class="note hidden" id="exprAutoNote" style="color:var(--accent);"></p>
   </div>
 
   <div class="row" style="margin-top:14px;">
@@ -87,6 +87,12 @@
 </div>
 
 <div id="results" class="hidden">
+
+  <!-- TRUTH TABLE (shown when the expression tab was used, for convenience) -->
+  <div class="card hidden" id="truthTableResultCard">
+    <h2>Truth Table</h2>
+    <div id="truthTableResultWrap"></div>
+  </div>
 
   <!-- KMAP -->
   <div class="card">
@@ -99,11 +105,11 @@
     <h2>Minimization (Quine–McCluskey)</h2>
     <div class="flex-cols">
       <div>
-        <h3 style="margin-bottom:4px;">SOP derivation (grouping the 1s)</h3>
+        <h3 style="margin-bottom:4px;">SOP groups selected (1s)</h3>
         <div class="steps" id="sopSteps"></div>
       </div>
       <div>
-        <h3 style="margin-bottom:4px;">POS derivation (grouping the 0s)</h3>
+        <h3 style="margin-bottom:4px;">POS groups selected (0s)</h3>
         <div class="steps" id="posSteps"></div>
       </div>
     </div>
@@ -117,9 +123,13 @@
   <div class="card">
     <h2>Gate-level Circuit</h2>
     <div class="gatebar">
-      <button class="secondary active" id="btn-std" onclick="setGateMode('std')">AND-OR-NOT</button>
-      <button class="secondary" id="btn-nand" onclick="setGateMode('nand')">NAND only</button>
-      <button class="secondary" id="btn-nor" onclick="setGateMode('nor')">NOR only</button>
+      <label for="gateModeSelect" style="align-self:center;">Realization:</label>
+      <select id="gateModeSelect" onchange="setGateMode(this.value)">
+        <option value="simplified" selected>A. Simplified (AND/OR/XOR/NOT/NAND/NOR)</option>
+        <option value="basic">B. Basic gates (AND / OR / NOT only)</option>
+        <option value="nand">C. NAND only (universal gate)</option>
+        <option value="nor">D. NOR only (universal gate)</option>
+      </select>
     </div>
     <div id="circuitWrap"></div>
     <p class="note" id="circuitNote"></p>
@@ -129,13 +139,20 @@
 
 <script>
 /* ============================================================
+   OVERVIEW
+   Pipeline: (truth table OR parsed expression) -> truth[] ->
+   K-map render -> Quine-McCluskey (SOP from 1s, POS from 0s) ->
+   gate graph (buildCircuitGraph) -> layered layout -> SVG.
+   Everything runs client-side; no build step, no dependencies.
+============================================================ */
+/* ============================================================
    STATE
 ============================================================ */
 let numVars = 3;
 let varNames = ['A','B','C'];
 let truth = []; // array of {vals:[0/1,...], out: 0|1|'X'}
-let lastResult = null; // {sopTerms, posTerms, sopSteps, posSteps}
-let gateMode = 'std';
+let lastResult = null; // {sopTerms, posTerms} from the last Generate
+let gateMode = 'simplified';
 
 /* ============================================================
    TABS / VAR COUNT
@@ -149,8 +166,16 @@ function switchTab(which){
 
 function onVarCountChange(){
   numVars = parseInt(document.getElementById('numVars').value);
-  varNames = ['A','B','C','D'].slice(0,numVars);
+  varNames = ['A','B','C','D','E','F'].slice(0,numVars);
   buildTruthTableUI();
+  setExprAutoNote('');
+}
+
+function setExprAutoNote(msg){
+  const el = document.getElementById('exprAutoNote');
+  if(!el) return;
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
 }
 
 function buildTruthTableUI(){
@@ -164,19 +189,43 @@ function buildTruthTableUI(){
   renderTruthTableUI();
 }
 
-function renderTruthTableUI(){
+// Builds one <table> for a slice of truth-table rows. indexOffset maps rows[0]
+// back to its real index in `truth`, so click handlers toggle the correct row.
+function buildSingleTruthTable(rows, interactive, indexOffset){
   let html = '<table><tr>';
   varNames.forEach(v=>html+=`<th>${v}</th>`);
   html += '<th>Out</th></tr>';
-  truth.forEach((row,i)=>{
+  rows.forEach((row,i)=>{
+    const idx = indexOffset + i;
     html += '<tr>';
     row.vals.forEach(v=>html+=`<td>${v}</td>`);
     const cls = row.out===1?'v1':(row.out==='X'?'vx':'v0');
-    html += `<td class="outcell ${cls}" onclick="cycleOut(${i})">${row.out}</td>`;
+    if(interactive){
+      html += `<td class="outcell ${cls}" onclick="cycleOut(${idx})">${row.out}</td>`;
+    } else {
+      html += `<td class="${cls}" style="font-weight:700;">${row.out}</td>`;
+    }
     html += '</tr>';
   });
   html += '</table>';
-  document.getElementById('truthTableWrap').innerHTML = html;
+  return html;
+}
+
+// Splits into two side-by-side tables once there are 32+ rows (5+ variables), since one long table gets unwieldy.
+function buildTruthTableHTML(rows, interactive){
+  if(rows.length >= 32){
+    const half = rows.length/2;
+    let html = '<div class="flex-cols">';
+    html += '<div>' + buildSingleTruthTable(rows.slice(0,half), interactive, 0) + '</div>';
+    html += '<div>' + buildSingleTruthTable(rows.slice(half), interactive, half) + '</div>';
+    html += '</div>';
+    return html;
+  }
+  return buildSingleTruthTable(rows, interactive, 0);
+}
+
+function renderTruthTableUI(){
+  document.getElementById('truthTableWrap').innerHTML = buildTruthTableHTML(truth, true);
 }
 
 function cycleOut(i){
@@ -275,12 +324,55 @@ function detectVarsInExpr(expr){
   return Array.from(set).sort();
 }
 
+// The variable-count dropdown only lists up to 5 by default; add "6" on the fly if an
+// expression needs it, instead of leaving the dropdown out of sync.
+function ensureNumVarOption(n){
+  const sel = document.getElementById('numVars');
+  const has = Array.from(sel.options).some(o=>o.value===String(n));
+  if(!has){
+    const opt = document.createElement('option');
+    opt.value = String(n);
+    opt.textContent = String(n);
+    sel.appendChild(opt);
+  }
+}
+
 function buildTruthFromExpression(expr){
-  const vars = detectVarsInExpr(expr);
-  if(vars.length===0) throw new Error('No variables found in expression.');
-  numVars = Math.min(vars.length,4);
-  varNames = vars.slice(0,4);
+  const usedVars = detectVarsInExpr(expr); // sorted alphabetically, e.g. ['A','C']
+  if(usedVars.length===0) throw new Error('No variables found in expression.');
+  if(usedVars.length>6){
+    const err = new Error(
+      `This expression uses ${usedVars.length} variables (${usedVars.join(', ')}), `+
+      `but this tool supports a maximum of 6 variables. Please simplify the expression.`
+    );
+    err.isVarCountError = true;
+    throw err;
+  }
+
+  // Only raise the selected variable count if the expression needs more than that.
+  const selectedNumVars = parseInt(document.getElementById('numVars').value);
+  let finalNumVars = selectedNumVars;
+  let autoIncreased = false;
+  if(usedVars.length > selectedNumVars){
+    finalNumVars = usedVars.length;
+    autoIncreased = true;
+  }
+
+  // If the selection has more variables than the expression uses, pad with unused
+  // letters — QM will naturally drop them from the minimized result since F doesn't
+  // depend on them.
+  const fillerPool = ['A','B','C','D','E','F'].filter(l=>!usedVars.includes(l));
+  const finalVars = usedVars.slice();
+  while(finalVars.length < finalNumVars && fillerPool.length){
+    finalVars.push(fillerPool.shift());
+  }
+  finalVars.sort();
+
+  numVars = finalNumVars;
+  varNames = finalVars;
+  ensureNumVarOption(numVars);
   document.getElementById('numVars').value = String(numVars);
+
   const tokens = tokenize(expr);
   const ast = parseExpr(tokens);
   truth = [];
@@ -296,6 +388,7 @@ function buildTruthFromExpression(expr){
     const out = evalNode(ast, env);
     truth.push({vals, out});
   }
+  return {autoIncreased, finalNumVars, usedVars, finalVars};
 }
 
 /* ============================================================
@@ -316,12 +409,21 @@ function mintermIndexFromBits(bitObj){
   return idx;
 }
 
-function renderKmap(){
-  const wrap = document.getElementById('kmapWrap');
+// Which variables run down the rows vs. across the columns of the K-map,
+// for the current numVars. Shared by the K-map renderer and the group-box description.
+function getKmapAxes(){
   let rowVars, colVars;
   if(numVars===2){ rowVars=[varNames[0]]; colVars=[varNames[1]]; }
   else if(numVars===3){ rowVars=[varNames[0]]; colVars=[varNames[1],varNames[2]]; }
-  else { rowVars=[varNames[0],varNames[1]]; colVars=[varNames[2],varNames[3]]; }
+  else if(numVars===4){ rowVars=[varNames[0],varNames[1]]; colVars=[varNames[2],varNames[3]]; }
+  else if(numVars===5){ rowVars=[varNames[0],varNames[1],varNames[2]]; colVars=[varNames[3],varNames[4]]; }
+  else { rowVars=[varNames[0],varNames[1],varNames[2]]; colVars=[varNames[3],varNames[4],varNames[5]]; }
+  return {rowVars, colVars};
+}
+
+function renderKmap(){
+  const wrap = document.getElementById('kmapWrap');
+  const {rowVars, colVars} = getKmapAxes();
 
   const rowBits = rowVars.length, colBits = colVars.length;
   const rowGray = grayCode(rowBits), colGray = grayCode(colBits);
@@ -402,10 +504,7 @@ function runQM(targetMinterms, dontCares, bits){
             anyCombined = true;
             used.add(a.term+'|'+[...a.minterms].sort().join(','));
             used.add(b.term+'|'+[...b.minterms].sort().join(','));
-            const ones = countOnes(combined.replace(/-/g,'0'));
-            // careful: count ones ignoring dash properly
-            const onesCount = countOnes(combined);
-            const key = onesCount;
+            const key = countOnes(combined); // group next pass by number of 1s (dashes count as 0)
             if(!nextGroups[key]) nextGroups[key]=[];
             const unionM = new Set([...a.minterms, ...b.minterms]);
             // avoid duplicate combined term in same group
@@ -482,9 +581,40 @@ function termToSOPLiteral(term){
   return lits; // empty means constant 1
 }
 
+// Does K-map row/col header string s (e.g. "01") match a QM term pattern (e.g. "0-")?
+// '-' in the pattern means "don't care about this bit" (any value matches).
+function patternMatches(headerStr, pattern){
+  for(let i=0;i<pattern.length;i++){
+    if(pattern[i]!=='-' && pattern[i]!==headerStr[i]) return false;
+  }
+  return true;
+}
+
+// Describes a selected QM term (e.g. "1-0") as the actual rows/columns of the K-map
+// it spans — e.g. "Rows 10, 11 · Columns 00" — instead of the full grouping derivation.
+function groupBoxDescription(term){
+  const {rowVars, colVars} = getKmapAxes();
+  const rowBits = rowVars.length, colBits = colVars.length;
+  const rowPattern = term.substring(0, rowBits);
+  const colPattern = term.substring(rowBits);
+  const rowHeaders = grayCode(rowBits).map(v=>bitsToStr(v,rowBits)).filter(s=>patternMatches(s,rowPattern));
+  const colHeaders = grayCode(colBits).map(v=>bitsToStr(v,colBits)).filter(s=>patternMatches(s,colPattern));
+  const rowsStr = rowHeaders.length===Math.pow(2,rowBits) ? 'all' : rowHeaders.join(', ');
+  const colsStr = colHeaders.length===Math.pow(2,colBits) ? 'all' : colHeaders.join(', ');
+  return `Rows ${rowsStr} · Columns ${colsStr}`;
+}
+
 function literalsToString(lits, comp){
   if(lits.length===0) return '1';
   return lits.map(l=>l.name + ((l.comp!==comp)?"'":'')).join('');
+}
+
+// Converts one QM term of F' into its POS factor: by De Morgan, the OR of the
+// complemented literals. An empty literal list means F' \u2261 1, whose dual is
+// the constant 0 (not '1').
+function posFactorToString(lits){
+  if(lits.length===0) return '0';
+  return '(' + lits.map(l=>l.name + (!l.comp?"'":'')).join(' + ') + ')';
 }
 
 /* ============================================================
@@ -495,11 +625,27 @@ function generateAll(){
   if(exprVisible){
     const expr = document.getElementById('exprInput').value.trim();
     if(!expr){ alert('Enter an expression.'); return; }
-    try{ buildTruthFromExpression(expr); }
-    catch(e){ alert('Could not parse expression: '+e.message); return; }
+    let exprInfo;
+    try{
+      exprInfo = buildTruthFromExpression(expr);
+    }catch(e){
+      // A too-many-variables error is already a complete, specific message —
+      // don't bury it behind a generic "could not parse" prefix.
+      alert(e.isVarCountError ? e.message : ('Could not parse expression: '+e.message));
+      return;
+    }
+    setExprAutoNote(exprInfo.autoIncreased
+      ? `Note: this expression uses ${exprInfo.usedVars.length} variables (${exprInfo.usedVars.join(', ')}), `+
+        `so the variable count was automatically increased to ${exprInfo.finalNumVars} to fit it.`
+      : '');
     renderTruthTableUI(); // reflect into truth-table tab too
+    // Also show the generated truth table alongside the results, for convenience.
+    document.getElementById('truthTableResultWrap').innerHTML = buildTruthTableHTML(truth, false);
+    document.getElementById('truthTableResultCard').classList.remove('hidden');
   } else {
+    setExprAutoNote('');
     if(truth.length===0) buildTruthTableUI();
+    document.getElementById('truthTableResultCard').classList.add('hidden');
   }
 
   const ones = [], zeros = [], dc = [];
@@ -527,13 +673,22 @@ function generateAll(){
   // render K-map
   renderKmap();
 
-  // render steps
-  document.getElementById('sopSteps').innerHTML = sopQM.stepsLog.concat(sopSteps).map(s=>escapeHtml(s)).join('<br>') || '(no 1s to group — function is 0)';
-  document.getElementById('posSteps').innerHTML = posQM.stepsLog.concat(posSteps).map(s=>escapeHtml(s)).join('<br>') || '(no 0s to group — function is 1)';
+  // render selected groups as simple "which rows/columns this box covers" lines,
+  // instead of the full pass-by-pass Quine–McCluskey derivation.
+  const sopGroupLines = sopChosen.map(pi=>{
+    const label = literalsToString(termToSOPLiteral(pi.term), false) || '1';
+    return `<b>${escapeHtml(label)}</b> — ${escapeHtml(groupBoxDescription(pi.term))}`;
+  });
+  const posGroupLines = posChosen.map(pi=>{
+    const label = posFactorToString(termToSOPLiteral(pi.term));
+    return `<b>${escapeHtml(label)}</b> — ${escapeHtml(groupBoxDescription(pi.term))}`;
+  });
+  document.getElementById('sopSteps').innerHTML = sopGroupLines.join('<br>') || '(no 1s to group — function is 0)';
+  document.getElementById('posSteps').innerHTML = posGroupLines.join('<br>') || '(no 0s to group — function is 1)';
 
   // render expressions
   const sopStr = ones.length===0 ? '0' : sopTerms.map(lits=>literalsToString(lits,false)).join(' + ');
-  const posStr = zeros.length===0 ? '1' : posTerms.map(lits=>'('+literalsToString(lits,true)+')').join('');
+  const posStr = zeros.length===0 ? '1' : posTerms.map(posFactorToString).join('');
   document.getElementById('sopExpr').textContent = 'F = ' + sopStr;
   document.getElementById('posExpr').textContent = 'F = ' + posStr;
 
@@ -544,113 +699,507 @@ function generateAll(){
 function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
 /* ============================================================
-   GATE MODE + CIRCUIT SVG
+   GATE MODE + CIRCUIT GRAPH BUILDING
+   Every mode is restricted to 2-input gates. We build an abstract
+   AND/OR/XOR/VAR expression tree from the minimized SOP (or POS,
+   for the NOR case), then "materialize" it into a DAG of concrete
+   2-input gate nodes, choosing (per mode) which gate family is
+   allowed and reusing one shared inverter per complemented
+   variable rather than duplicating inverters at every use site.
+============================================================ */
+
+// POS "sum" factor: `lits` represent the AND-term of F' (from Quine-McCluskey on the
+// 0s); by De Morgan the matching POS factor is the OR of the *complemented* literals.
+function posFactorLiterals(lits){
+  return lits.map(l=>({name:l.name, comp: !l.comp}));
+}
+
+// Detect pairs of 2-literal SOP terms over the same two variables that combine into a
+// single XOR or XNOR gate (X'Y+XY' = X^Y ; XY+X'Y' = X⊙Y), for the "Simplified" mode.
+function findXorPairs(terms){
+  const used = new Set();
+  const compounds = [];
+  for(let i=0;i<terms.length;i++){
+    if(used.has(i) || terms[i].length!==2) continue;
+    for(let j=i+1;j<terms.length;j++){
+      if(used.has(j) || terms[j].length!==2) continue;
+      const a=terms[i], b=terms[j];
+      const namesA=a.map(l=>l.name).sort().join(','), namesB=b.map(l=>l.name).sort().join(',');
+      if(namesA!==namesB) continue;
+      const aMap={}; a.forEach(l=>aMap[l.name]=l.comp);
+      const bMap={}; b.forEach(l=>bMap[l.name]=l.comp);
+      const names=a.map(l=>l.name); const n1=names[0], n2=names[1];
+      const aPat=[aMap[n1],aMap[n2]], bPat=[bMap[n1],bMap[n2]];
+      const isXor  = (aPat[0]!==aPat[1]) && (bPat[0]!==bPat[1]) && (aPat[0]!==bPat[0]);
+      const isXnor = (aPat[0]===aPat[1]) && (bPat[0]===bPat[1]) && (aPat[0]!==bPat[0]);
+      if(isXor || isXnor){
+        used.add(i); used.add(j);
+        compounds.push({type: isXor?'XOR':'XNOR', vars:[n1,n2]});
+        break;
+      }
+    }
+  }
+  return {compounds, used};
+}
+
+// Builds a full node graph {nodes, outputId, constMsg} for the given mode ('simplified',
+// 'basic', 'nand', 'nor'). nodes: array of {id, kind:'INPUT'|'GATE'|'OUTPUT'|'DUMMY',
+// gateType, label, inputs:[nodeId,...]}. Nodes are always pushed in dependency order
+// (a node's inputs are always created before the node itself).
+function buildCircuitGraph(mode){
+  const nodes = [];
+  let idCounter = 0;
+  const newId = ()=>'g'+(idCounter++);
+  const varInputCache = {};
+  const invCache = {};
+
+  // Tracks each node's logic-depth (longest path from a primary input, in gate hops) as
+  // nodes are created, so the tree-building helpers below can balance by *arrival time*
+  // rather than by list position — this is what keeps e.g. "A+B+C.D" at 2 levels instead
+  // of accidentally chaining a fresh 2-input OR onto an already-deep subtree.
+  const depthOf = {};
+  function addNode(props){
+    const n=Object.assign({id:newId(), inputs:[]}, props);
+    nodes.push(n);
+    n.depth = (n.kind==='GATE' && n.inputs.length)
+      ? Math.max(...n.inputs.map(id=>depthOf[id]||0)) + 1
+      : 0;
+    depthOf[n.id]=n.depth;
+    return n;
+  }
+  function getVarInput(name){
+    if(varInputCache[name]) return varInputCache[name];
+    const n = addNode({kind:'INPUT', label:name, order:varNames.indexOf(name)});
+    varInputCache[name]=n; return n;
+  }
+  // One shared inverter per (variable, gate-family) — reused by every consumer that needs
+  // that variable's complement, instead of a fresh inverter per occurrence.
+  function getSharedInverter(name, gt){
+    const key=name+'|'+gt;
+    if(invCache[key]) return invCache[key];
+    const src=getVarInput(name);
+    const n = (gt==='NOT')
+      ? addNode({kind:'GATE', gateType:'NOT', inputs:[src.id]})
+      : addNode({kind:'GATE', gateType:gt, inputs:[src.id, src.id]}); // tied-input NAND/NOR = inverter
+    invCache[key]=n; return n;
+  }
+  function literalId(lit, invType){
+    const inp = getVarInput(lit.name);
+    return lit.comp ? getSharedInverter(lit.name, invType).id : inp.id;
+  }
+  // Combine a flat list of node-ids into a minimum-depth binary tree of 2-input `op`
+  // gates. Items being combined can already sit at different depths (e.g. when OR-ing
+  // together a bare literal — depth 0 — with a product term that needed its own AND
+  // gate — depth 1), so a plain "pair up by list position" balancer can needlessly
+  // chain a shallow item onto a deep one and add an extra level. Instead this always
+  // merges the two currently-shallowest items first (a small min-heap via sort, fine
+  // at classroom scale): every merge costs max(depthA,depthB)+1, so resolving the
+  // shallow items amongst themselves first keeps that max — and the final depth —
+  // as low as possible. This greedy shallowest-first merge is optimal for minimizing
+  // the resulting tree's depth.
+  function buildBalanced(items, op){
+    if(items.length===0) return null;
+    let queue = items.map(id=>({id, depth: depthOf[id]||0}));
+    while(queue.length>1){
+      queue.sort((a,b)=>a.depth-b.depth);
+      const a=queue.shift(), b=queue.shift();
+      const g = addNode({kind:'GATE', gateType:op, inputs:[a.id,b.id]});
+      queue.push({id:g.id, depth:g.depth});
+    }
+    return queue[0].id;
+  }
+  // Same shallowest-first idea, but over abstract (not-yet-materialized) tree nodes —
+  // used for NAND/NOR modes, where depth is the structural op-tree depth rather than a
+  // realized gate count (they track closely once materialized).
+  function buildBalancedAbstract(items, op){
+    if(items.length===1) return items[0];
+    let queue = items.map(n=>({node:n, depth:n.depth||0}));
+    while(queue.length>1){
+      queue.sort((a,b)=>a.depth-b.depth);
+      const a=queue.shift(), b=queue.shift();
+      const depth = Math.max(a.depth,b.depth)+1;
+      queue.push({node:{op, a:a.node, b:b.node, depth}, depth});
+    }
+    return queue[0].node;
+  }
+  function buildExprTree(terms, innerOp, outerOp){
+    const termTrees = terms.map(t=>buildBalancedAbstract(t.map(l=>({op:'VAR', name:l.name, comp:l.comp, depth:0})), innerOp));
+    return buildBalancedAbstract(termTrees, outerOp);
+  }
+
+  // Converts an AND/OR/VAR tree into 2-input NAND gates only, via De Morgan bubble-
+  // pushing. wantComp requests the node's true value (false) or complement (true).
+  function materializeNand(node, wantComp){
+    if(node.op==='VAR'){
+      const rawId = getVarInput(node.name).id;
+      const finalComp = wantComp ? !node.comp : node.comp;
+      return finalComp ? getSharedInverter(node.name,'NAND').id : rawId;
+    }
+    if(node.op==='AND'){
+      const na=materializeNand(node.a,false), nb=materializeNand(node.b,false);
+      const g1=addNode({kind:'GATE', gateType:'NAND', inputs:[na,nb]}).id; // = complement of AND
+      if(wantComp) return g1;
+      return addNode({kind:'GATE', gateType:'NAND', inputs:[g1,g1]}).id; // invert to get true AND
+    } else { // OR
+      const na=materializeNand(node.a,true), nb=materializeNand(node.b,true);
+      const g1=addNode({kind:'GATE', gateType:'NAND', inputs:[na,nb]}).id; // = true OR (De Morgan)
+      if(!wantComp) return g1;
+      return addNode({kind:'GATE', gateType:'NAND', inputs:[g1,g1]}).id; // invert to get NOR
+    }
+  }
+  // Symmetric construction for NOR-only, built from an OR/AND/VAR (POS) tree.
+  function materializeNor(node, wantComp){
+    if(node.op==='VAR'){
+      const rawId = getVarInput(node.name).id;
+      const finalComp = wantComp ? !node.comp : node.comp;
+      return finalComp ? getSharedInverter(node.name,'NOR').id : rawId;
+    }
+    if(node.op==='OR'){
+      const na=materializeNor(node.a,false), nb=materializeNor(node.b,false);
+      const g1=addNode({kind:'GATE', gateType:'NOR', inputs:[na,nb]}).id; // = complement of OR
+      if(wantComp) return g1;
+      return addNode({kind:'GATE', gateType:'NOR', inputs:[g1,g1]}).id;
+    } else { // AND
+      const na=materializeNor(node.a,true), nb=materializeNor(node.b,true);
+      const g1=addNode({kind:'GATE', gateType:'NOR', inputs:[na,nb]}).id; // = true AND (De Morgan)
+      if(!wantComp) return g1;
+      return addNode({kind:'GATE', gateType:'NOR', inputs:[g1,g1]}).id;
+    }
+  }
+
+  const sopTerms = lastResult.sopTerms;
+  const posFactors = lastResult.posTerms.map(posFactorLiterals);
+  const sopIsConst0 = sopTerms.length===0;
+  const sopIsConst1 = sopTerms.length===1 && sopTerms[0].length===0;
+  const posIsConst1 = posFactors.length===0;
+  const posIsConst0 = posFactors.length===1 && posFactors[0].length===0;
+
+  let rootId=null, constMsg=null;
+
+  if(mode==='basic' || mode==='simplified'){
+    if(sopIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
+    else if(sopIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
+    else {
+      let termIds;
+      if(mode==='simplified'){
+        const {compounds, used} = findXorPairs(sopTerms);
+        const compoundIds = compounds.map(c=>{
+          const aId=getVarInput(c.vars[0]).id, bId=getVarInput(c.vars[1]).id;
+          const xg = addNode({kind:'GATE', gateType:'XOR', inputs:[aId,bId]}).id;
+          return c.type==='XNOR' ? addNode({kind:'GATE', gateType:'NOT', inputs:[xg]}).id : xg;
+        });
+        const restIds = sopTerms.map((t,i)=> used.has(i) ? null : buildBalanced(t.map(l=>literalId(l,'NOT')), 'AND'))
+                                 .filter(x=>x!==null);
+        termIds = compoundIds.concat(restIds);
+      } else {
+        termIds = sopTerms.map(t=>buildBalanced(t.map(l=>literalId(l,'NOT')), 'AND'));
+      }
+      rootId = buildBalanced(termIds, 'OR');
+    }
+  } else if(mode==='nand'){
+    if(sopIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
+    else if(sopIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
+    else rootId = materializeNand(buildExprTree(sopTerms, 'AND', 'OR'), false);
+  } else if(mode==='nor'){
+    if(posIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
+    else if(posIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
+    else rootId = materializeNor(buildExprTree(posFactors, 'OR', 'AND'), false);
+  }
+
+  let outputId=null;
+  if(rootId){ outputId = addNode({kind:'OUTPUT', inputs:[rootId]}).id; }
+  return {nodes, outputId, constMsg};
+}
+
+/* ============================================================
+   LAYERED LAYOUT (Sugiyama-style): longest-path layering, dummy
+   nodes for edges spanning multiple layers, barycenter ordering
+   to reduce crossings, then coordinate assignment.
+============================================================ */
+function computeLayers(nodes){
+  const map = new Map();
+  nodes.forEach(n=>{
+    if(n.kind==='INPUT'){ n.layer=0; }
+    else {
+      let l=0;
+      (n.inputs||[]).forEach(iid=>{ l=Math.max(l, map.get(iid).layer+1); });
+      n.layer=l;
+    }
+    map.set(n.id,n);
+  });
+}
+
+function expandLongEdges(nodes){
+  const map = new Map(nodes.map(n=>[n.id,n]));
+  let dc=0;
+  nodes.slice().forEach(n=>{
+    if(!n.inputs || n.inputs.length===0) return;
+    n.inputs = n.inputs.map(srcId=>{
+      let cur = map.get(srcId);
+      while(n.layer - cur.layer > 1){
+        const d = {id:'dum'+(dc++), kind:'DUMMY', inputs:[cur.id], layer:cur.layer+1};
+        nodes.push(d); map.set(d.id,d);
+        cur = d;
+      }
+      return cur.id;
+    });
+  });
+}
+
+function orderLayers(nodes){
+  const byLayer={};
+  nodes.forEach(n=>{ (byLayer[n.layer]=byLayer[n.layer]||[]).push(n); });
+  Object.values(byLayer).forEach(arr=>arr.forEach((n,i)=>{ if(n.order===undefined) n.order=i; }));
+  const map = new Map(nodes.map(n=>[n.id,n]));
+  const consumers = new Map();
+  nodes.forEach(n=>{ (n.inputs||[]).forEach(iid=>{ if(!consumers.has(iid)) consumers.set(iid,[]); consumers.get(iid).push(n.id); }); });
+  const layerKeys = Object.keys(byLayer).map(Number).sort((a,b)=>a-b);
+  for(let pass=0; pass<4; pass++){
+    const forward = pass%2===0;
+    const order = forward ? layerKeys : layerKeys.slice().reverse();
+    order.forEach(L=>{
+      const arr = byLayer[L];
+      arr.forEach(n=>{
+        let refs = forward ? (n.inputs||[]).map(iid=>map.get(iid).order)
+                            : (consumers.get(n.id)||[]).map(cid=>map.get(cid).order);
+        n._bary = refs.length ? refs.reduce((a,b)=>a+b,0)/refs.length : n.order;
+      });
+      arr.sort((a,b)=>a._bary-b._bary);
+      arr.forEach((n,i)=>n.order=i);
+    });
+  }
+}
+
+const CIRC = {colWidth:160, rowHeight:70, marginX:90, marginY:40, GW:64, GH:36, NW:42, NH:26, BR:4.5};
+
+function assignCoords(nodes){
+  const byLayer={};
+  nodes.forEach(n=>{ (byLayer[n.layer]=byLayer[n.layer]||[]).push(n); });
+  Object.entries(byLayer).forEach(([L,arr])=>{
+    arr.sort((a,b)=>a.order-b.order);
+    arr.forEach((n,i)=>{ n.x = CIRC.marginX + Number(L)*CIRC.colWidth; n.y = CIRC.marginY + i*CIRC.rowHeight; });
+  });
+}
+
+// Nudge each node toward the average y of its inputs (keeping order & minimum spacing)
+// so straight-through connections stay straight instead of zig-zagging needlessly.
+function refineY(nodes){
+  const map = new Map(nodes.map(n=>[n.id,n]));
+  const maxLayer = Math.max(...nodes.map(n=>n.layer));
+  for(let L=1; L<=maxLayer; L++){
+    const arr = nodes.filter(n=>n.layer===L).sort((a,b)=>a.order-b.order);
+    arr.forEach(n=>{
+      const refs = (n.inputs||[]).map(iid=>map.get(iid).y);
+      n._desired = refs.length ? refs.reduce((a,b)=>a+b,0)/refs.length : n.y;
+    });
+    for(let i=0;i<arr.length;i++){
+      let y = arr[i]._desired;
+      if(i>0) y = Math.max(y, arr[i-1].y + CIRC.rowHeight);
+      arr[i].y = y;
+    }
+  }
+}
+
+/* ============================================================
+   SVG RENDERING — gate shapes, routed orthogonal wires, and
+   small "hop" jumps where unrelated wires cross.
+============================================================ */
+function gateHasBubble(gt){ return gt==='NAND'||gt==='NOR'||gt==='NOT'; }
+
+function outPoint(n){
+  const {GW,NW,BR} = CIRC;
+  if(n.kind==='INPUT'||n.kind==='DUMMY') return {x:n.x, y:n.y};
+  if(n.kind==='GATE'){
+    // Wire starts at the gate body's tip, or the bubble's far edge if it has one —
+    // never a floating gap.
+    const tip = n.x + (n.gateType==='NOT' ? NW : GW);
+    return {x: tip + (gateHasBubble(n.gateType) ? 2*BR : 0), y:n.y};
+  }
+  return {x:n.x, y:n.y};
+}
+function inPoints(n){
+  const {GW,GH} = CIRC;
+  if(n.kind==='INPUT') return [];
+  if(n.kind==='DUMMY' || n.kind==='OUTPUT') return [{x:n.x, y:n.y}];
+  if(n.gateType==='NOT') return [{x:n.x, y:n.y}];
+  const top = n.y - GH/2;
+  return [{x:n.x, y:top+GH*0.26}, {x:n.x, y:top+GH*0.74}];
+}
+
+function drawGateNode(n){
+  const {GW,GH,NW,NH,BR} = CIRC;
+  if(n.gateType==='NOT'){
+    const x=n.x, y=n.y-NH/2, w=NW, h=NH;
+    // Bubble is tangent to the triangle's apex (at x+w), so there's no gap between them.
+    let out = `<path d="M ${x} ${y} L ${x+w} ${y+h/2} L ${x} ${y+h} Z" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>`;
+    out += `<circle cx="${x+w+BR}" cy="${y+h/2}" r="${BR}" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>`;
+    return out;
+  }
+  const x=n.x, y=n.y-GH/2, w=GW, h=GH, r=h/2;
+  const isAndFamily = n.gateType==='AND'||n.gateType==='NAND';
+  let d;
+  if(isAndFamily){
+    // Flat sides run to (w - r), then a semicircular bulge carries the curve to x+w,
+    // matching every other gate family's tip (see outPoint()).
+    const flat = w - r;
+    d = `M ${x} ${y} h ${flat} a ${r} ${r} 0 0 1 0 ${h} h ${-flat} Z`;
+  } else {
+    // OR/XOR/NOR: convex front curving to a point at exactly x+w, concave notch at back.
+    d = `M ${x} ${y} Q ${x+w*0.55} ${y} ${x+w} ${y+h/2} Q ${x+w*0.55} ${y+h} ${x} ${y+h} Q ${x+w*0.2} ${y+h/2} ${x} ${y} Z`;
+  }
+  let out = `<path d="${d}" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>`;
+  if(n.gateType==='XOR'){
+    out += `<path d="M ${x-6} ${y} q ${w*0.2} ${h/2} 0 ${h}" fill="none" stroke="#38bdf8" stroke-width="2"/>`;
+  }
+  out += `<text x="${x+w*0.16}" y="${n.y+4}" fill="#e2e8f0" font-size="10.5" font-weight="700">${n.gateType}</text>`;
+  if(gateHasBubble(n.gateType)){
+    // Same tangent-bubble treatment as NOT (see above).
+    out += `<circle cx="${x+w+BR}" cy="${n.y}" r="${BR}" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>`;
+  }
+  return out;
+}
+
+function renderCircuitSVG(nodes, outputId){
+  const map = new Map(nodes.map(n=>[n.id,n]));
+
+  // One wire per input pin: a straight line if source/dest share a y, else a
+  // 3-segment orthogonal Z-route.
+  let wireId=0;
+  const wires=[];
+  nodes.forEach(n=>{
+    if(!n.inputs) return;
+    const pins = inPoints(n);
+    n.inputs.forEach((srcId, idx)=>{
+      const src = map.get(srcId);
+      const sp = outPoint(src);
+      const dp = pins[idx] || pins[0];
+      const straight = Math.abs(sp.y-dp.y) < 0.5;
+      const pts = straight
+        ? [[sp.x,sp.y],[dp.x,sp.y]]
+        : [[sp.x,sp.y],[(sp.x+dp.x)/2,sp.y],[(sp.x+dp.x)/2,dp.y],[dp.x,dp.y]];
+      wires.push({id:'w'+(wireId++), points:pts, srcLayer:src.layer});
+    });
+  });
+
+  // Spread parallel wires' vertical bends across the column gap so they don't overlap.
+  const groups={};
+  wires.forEach(w=>{ (groups[w.srcLayer]=groups[w.srcLayer]||[]).push(w); });
+  Object.values(groups).forEach(g=>{
+    const bendWires = g.filter(w=>w.points.length===4);
+    if(bendWires.length<=1) return;
+    bendWires.sort((a,b)=>(a.points[0][1]+a.points[3][1])-(b.points[0][1]+b.points[3][1]));
+    const gapStart = Math.min(...bendWires.map(w=>w.points[0][0]));
+    const gapEnd = Math.max(...bendWires.map(w=>w.points[3][0]));
+    const n = bendWires.length;
+    bendWires.forEach((w,i)=>{
+      const bx = gapStart + (i+1)/(n+1)*(gapEnd-gapStart);
+      w.points[1][0]=bx; w.points[2][0]=bx;
+    });
+  });
+
+  // Flatten into H/V segments (tagged by wire) for crossing detection.
+  const segs=[];
+  wires.forEach(w=>{
+    for(let i=0;i<w.points.length-1;i++){
+      const [x1,y1]=w.points[i], [x2,y2]=w.points[i+1];
+      if(y1===y2) segs.push({type:'H', wireId:w.id, y:y1, x1:Math.min(x1,x2), x2:Math.max(x1,x2)});
+      else segs.push({type:'V', wireId:w.id, x:x1, y1:Math.min(y1,y2), y2:Math.max(y1,y2)});
+    }
+  });
+
+  // Renders one wire's path, adding a small bump where it crosses another wire's
+  // vertical run (standard schematic "jump" convention for unconnected wires).
+  function pathForWire(w){
+    let d='';
+    for(let i=0;i<w.points.length-1;i++){
+      const [x1,y1]=w.points[i], [x2,y2]=w.points[i+1];
+      if(d==='') d += `M ${x1} ${y1} `;
+      if(y1===y2){
+        const xa=Math.min(x1,x2), xb=Math.max(x1,x2);
+        const crosses=[];
+        segs.forEach(s=>{
+          if(s.wireId===w.id || s.type!=='V') return;
+          if(s.x>xa+3 && s.x<xb-3 && y1>s.y1+3 && y1<s.y2-3) crosses.push(s.x);
+        });
+        const dir = x1<x2 ? 1 : -1;
+        crosses.sort((p,q)=> dir>0 ? p-q : q-p);
+        const hopR=6;
+        crosses.forEach(cx=>{
+          const before=cx-dir*hopR, after=cx+dir*hopR;
+          d += `L ${before} ${y1} Q ${cx} ${y1-9} ${after} ${y1} `;
+        });
+        d += `L ${x2} ${y2} `;
+      } else {
+        d += `L ${x2} ${y2} `;
+      }
+    }
+    return d;
+  }
+
+  const maxX = Math.max(...nodes.map(n=>n.x)) + 140;
+  const maxY = Math.max(...nodes.map(n=>n.y)) + 60;
+
+  let svg = `<svg viewBox="0 0 ${maxX} ${maxY}" width="100%" style="max-width:1000px;">`;
+
+  wires.forEach(w=>{ svg += `<path d="${pathForWire(w)}" fill="none" stroke="#94a3b8" stroke-width="1.6"/>`; });
+
+  nodes.forEach(n=>{
+    if(n.kind==='GATE' || n.kind==='OUTPUT'){
+      inPoints(n).forEach(p=>{ svg += `<circle cx="${p.x}" cy="${p.y}" r="2" fill="#94a3b8"/>`; });
+    }
+  });
+
+  nodes.forEach(n=>{
+    if(n.kind==='INPUT'){
+      svg += `<text x="${n.x-10}" y="${n.y+4}" fill="#e2e8f0" font-size="13" text-anchor="end" font-weight="600">${escapeHtml(n.label)}</text>`;
+      svg += `<circle cx="${n.x}" cy="${n.y}" r="2.5" fill="#38bdf8"/>`;
+    } else if(n.kind==='OUTPUT'){
+      svg += `<text x="${n.x+10}" y="${n.y+4}" fill="#38bdf8" font-size="14" font-weight="700">F</text>`;
+    } else if(n.kind==='GATE'){
+      svg += drawGateNode(n);
+    }
+    // DUMMY nodes are pure routing waypoints and are not drawn.
+  });
+
+  svg += `</svg>`;
+  return svg;
+}
+
+/* ============================================================
+   TOP-LEVEL DRAW
 ============================================================ */
 function setGateMode(mode){
   gateMode = mode;
-  ['std','nand','nor'].forEach(m=>document.getElementById('btn-'+m).classList.toggle('active', m===mode));
   drawCircuit();
 }
 
-// literalsToString for POS "sum" grouping (each POS factor is OR of inverted literals)
-function posFactorLiterals(lits){
-  // lits already represent the AND-term of F'; invert each for the OR factor
-  return lits.map(l=>({name:l.name, comp: !l.comp}));
-}
+const GATE_MODE_NOTES = {
+  simplified: 'Simplified: a minimal 2-input circuit chosen freely from AND, OR, XOR, NOT, NAND and NOR — XOR/XNOR patterns in the SOP are detected and collapsed into a single gate where possible.',
+  basic: 'Basic gates: realized using only 2-input AND / OR gates plus inverters (NOT), directly from the minimized SOP — one shared inverter per complemented variable, reused wherever it\u2019s needed.',
+  nand: 'NAND only: every AND/OR gate is replaced by an equivalent 2-input NAND sub-circuit via consistent De Morgan bubble-pushing (valid at any tree depth, not just a 2-level SOP), including NAND-as-inverter (tied inputs) for complemented literals.',
+  nor: 'NOR only: every OR/AND gate of the POS realization is replaced by an equivalent 2-input NOR sub-circuit via consistent De Morgan bubble-pushing, including NOR-as-inverter (tied inputs) for complemented literals.'
+};
 
 function drawCircuit(){
   const svgWrap = document.getElementById('circuitWrap');
   const noteEl = document.getElementById('circuitNote');
   if(!lastResult){ svgWrap.innerHTML=''; return; }
 
-  let terms, level1Op, level2Op, factorIsOR; // factorIsOR: true for POS (level1 gates are OR), false for SOP (level1 AND)
-  if(gateMode==='nor'){
-    terms = lastResult.posTerms.map(posFactorLiterals);
-    level1Op='OR'; level2Op='AND'; factorIsOR=true;
-    noteEl.textContent = 'POS realized as two-level NOR-NOR: replacing every OR/AND gate of a Product-of-Sums circuit with a NOR gate (same wiring) reproduces the same function, by double negation — this is the standard "universal NOR" trick.';
-  } else if(gateMode==='nand'){
-    terms = lastResult.sopTerms;
-    level1Op='AND'; level2Op='OR'; factorIsOR=false;
-    noteEl.textContent = 'SOP realized as two-level NAND-NAND: replacing every AND/OR gate of a Sum-of-Products circuit with a NAND gate (same wiring) reproduces the same function, by double negation — the standard "universal NAND" trick.';
-  } else {
-    terms = lastResult.sopTerms;
-    level1Op='AND'; level2Op='OR'; factorIsOR=false;
-    noteEl.textContent = 'Direct two-level AND-OR-NOT realization of the minimized SOP expression.';
+  noteEl.textContent = GATE_MODE_NOTES[gateMode] || '';
+
+  const graph = buildCircuitGraph(gateMode);
+  if(graph.constMsg){
+    svgWrap.innerHTML = `<p class="note">${escapeHtml(graph.constMsg)}</p>`;
+    return;
   }
 
-  if(terms.length===0){ svgWrap.innerHTML = '<p class="note">Constant function — no gates needed.</p>'; return; }
+  computeLayers(graph.nodes);
+  expandLongEdges(graph.nodes);
+  orderLayers(graph.nodes);
+  assignCoords(graph.nodes);
+  refineY(graph.nodes);
 
-  svgWrap.innerHTML = buildSVG(terms, level1Op, level2Op, gateMode);
-}
-
-// Build an SVG two-level circuit. terms: array of literal-arrays. Each literal {name, comp}.
-function buildSVG(terms, level1Op, level2Op, mode){
-  const gateW = 70, gateH = 40, litGap = 26, gateGapY = 70;
-  const leftX = 90;
-  const numTerms = terms.length;
-  const totalH = Math.max(220, numTerms*gateGapY + 80);
-  const level1X = leftX + 140;
-  const level2X = level1X + 220;
-  const svgW = level2X + 160;
-
-  let svg = `<svg viewBox="0 0 ${svgW} ${totalH}" width="100%" style="max-width:900px;">`;
-  svg += gateDefs();
-
-  const level1Centers = [];
-  terms.forEach((lits, ti)=>{
-    const cy = 60 + ti*gateGapY;
-    level1Centers.push(cy);
-    // input lines + labels + inverter bubbles as needed
-    const startY = cy - (lits.length-1)*litGap/2;
-    lits.forEach((lit, li)=>{
-      const y = startY + li*litGap;
-      svg += `<text x="${leftX-70}" y="${y+4}" fill="#e2e8f0" font-size="13">${lit.name}</text>`;
-      svg += `<line x1="${leftX-50}" y1="${y}" x2="${level1X-38}" y2="${y}" stroke="#94a3b8" stroke-width="1.5"/>`;
-      if(lit.comp){
-        svg += `<circle cx="${level1X-34}" cy="${y}" r="4" fill="#0b1220" stroke="#94a3b8" stroke-width="1.5"/>`;
-      }
-    });
-    // gate 1 body
-    const bubbleOut = (mode==='nand') || (mode==='nor'); // level1 gate rendered with output bubble in NAND/NOR mode
-    svg += drawGateShape(level1X, cy, gateW, gateH, level1Op, bubbleOut, lits.length);
-    // connector to level2
-    svg += `<line x1="${level1X+gateW+(bubbleOut?7:0)}" y1="${cy}" x2="${level2X-38}" y2="${cy}" stroke="#94a3b8" stroke-width="1.5"/>`;
-  });
-
-  // level 2 gate combining all term outputs
-  const cy2 = totalH/2;
-  const bubbleOut2 = (mode==='nand') || (mode==='nor');
-  svg += drawGateShape(level2X, cy2, gateW, gateH, level2Op, bubbleOut2, numTerms);
-  const outX = level2X+gateW+(bubbleOut2?7:0);
-  svg += `<line x1="${outX}" y1="${cy2}" x2="${outX+40}" y2="${cy2}" stroke="#94a3b8" stroke-width="1.5"/>`;
-  svg += `<text x="${outX+46}" y="${cy2+5}" fill="#38bdf8" font-size="14" font-weight="700">F</text>`;
-
-  svg += `</svg>`;
-  return svg;
-}
-
-function gateDefs(){ return ''; }
-
-// Draws an AND/OR/XOR-shaped gate at (cx,cy) center, with optional output inversion bubble.
-function drawGateShape(x, cy, w, h, op, bubble, numInputs){
-  const top = cy - h/2;
-  let path='';
-  if(op==='AND'){
-    // rectangle with rounded right side (AND shape)
-    path = `M ${x} ${top} h ${w*0.55} a ${h/2} ${h/2} 0 0 1 0 ${h} h -${w*0.55} z`;
-  } else { // OR shape: curved back, pointed front
-    path = `M ${x} ${top}
-             q ${w*0.35} 0 ${w*0.55} ${h/2}
-             q -${w*0.2} ${h/2} -${w*0.55} ${h/2}
-             q ${w*0.18} -${h/2} 0 -${h} z`;
-  }
-  let g = `<path d="${path}" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>`;
-  const label = op==='AND' ? (bubble?'NAND':'AND') : (bubble?'NOR':'OR');
-  g += `<text x="${x+w*0.22}" y="${cy+4}" fill="#e2e8f0" font-size="11" font-weight="600">${label}</text>`;
-  if(bubble){
-    g += `<circle cx="${x+w+4}" cy="${cy}" r="5" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>`;
-  }
-  return g;
+  svgWrap.innerHTML = renderCircuitSVG(graph.nodes, graph.outputId);
 }
 
 /* init */
