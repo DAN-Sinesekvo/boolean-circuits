@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K-Map & Logic Minimizer</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --accent:#38bdf8;
+    --text:#e2e8f0; --muted:#94a3b8; --good:#4ade80; --bad:#f87171; --dc:#fbbf24;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);padding:24px;}
+  h1{font-size:1.5rem;margin-bottom:4px;}
+  .sub{color:var(--muted);margin-bottom:20px;font-size:.9rem;}
+  .card{background:var(--panel);border-radius:12px;padding:18px;margin-bottom:18px;box-shadow:0 2px 8px rgba(0,0,0,.3);}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
+  label{font-size:.85rem;color:var(--muted);}
+  select,input[type=text],button{
+    background:var(--panel2);color:var(--text);border:1px solid #334155;border-radius:8px;
+    padding:8px 12px;font-size:.9rem;
+  }
+  button{cursor:pointer;background:var(--accent);color:#04202f;font-weight:600;border:none;}
+  button.secondary{background:var(--panel2);color:var(--text);border:1px solid #334155;}
+  button.secondary.active{background:var(--accent);color:#04202f;}
+  button:hover{opacity:.9;}
+  .tabs{display:flex;gap:8px;margin-bottom:12px;}
+  .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:var(--panel2);cursor:pointer;color:var(--muted);}
+  .tab.active{background:var(--accent);color:#04202f;font-weight:600;}
+  .hidden{display:none !important;}
+  table{border-collapse:collapse;margin-top:10px;}
+  td,th{border:1px solid #334155;padding:6px 12px;text-align:center;font-size:.85rem;}
+  th{background:var(--panel2);}
+  td.outcell{cursor:pointer;font-weight:700;user-select:none;}
+  td.v0{color:var(--bad);}
+  td.v1{color:var(--good);}
+  td.vx{color:var(--dc);}
+  .kmapcell{cursor:pointer;font-weight:700;min-width:34px;}
+  code{background:var(--panel2);padding:2px 6px;border-radius:4px;}
+  .expr{font-size:1.15rem;background:var(--panel2);padding:10px 14px;border-radius:8px;display:inline-block;margin-top:6px;}
+  .steps{font-size:.82rem;color:var(--muted);line-height:1.6;max-height:260px;overflow:auto;background:var(--panel2);padding:10px;border-radius:8px;margin-top:8px;}
+  .gatebar{display:flex;gap:8px;margin-bottom:10px;}
+  svg{background:#0b1220;border-radius:8px;border:1px solid #334155;}
+  .note{font-size:.78rem;color:var(--muted);margin-top:6px;}
+  .flex-cols{display:flex;gap:24px;flex-wrap:wrap;}
+</style>
+</head>
+<body>
+
+<h1>K-Map &amp; Boolean Logic Minimizer</h1>
+<div class="sub">Truth table or expression → K-map → minimized SOP/POS (Quine–McCluskey, with steps) → AND-OR / NAND-only / NOR-only circuit diagram. 100% client-side.</div>
+
+<!-- INPUT CARD -->
+<div class="card">
+  <div class="tabs">
+    <div class="tab active" id="tab-truth" onclick="switchTab('truth')">Truth Table</div>
+    <div class="tab" id="tab-expr" onclick="switchTab('expr')">Logical Expression</div>
+  </div>
+
+  <div class="row">
+    <label>Number of variables</label>
+    <select id="numVars" onchange="onVarCountChange()">
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+    </select>
+    <span class="note">(K-map is drawn for 2–4 variables; the minimizer engine itself works for more, but the grid is capped here for clarity)</span>
+  </div>
+
+  <div id="pane-truth">
+    <p class="note">Click each output cell to cycle <b>0 → 1 → X (don't care) → 0</b>.</p>
+    <div id="truthTableWrap"></div>
+  </div>
+
+  <div id="pane-expr" class="hidden">
+    <p class="note">
+      Use single letters as variables (A, B, C, D). Operators:
+      NOT = <code>!</code> or trailing <code>'</code>, AND = <code>.</code> or just juxtaposition (<code>AB</code>),
+      OR = <code>+</code>, XOR = <code>^</code>. Parentheses allowed. Example: <code>A'B + AC' + (B^C)</code>
+    </p>
+    <input type="text" id="exprInput" placeholder="e.g. A'B + AC' + BC" style="width:100%;max-width:480px;">
+  </div>
+
+  <div class="row" style="margin-top:14px;">
+    <button onclick="generateAll()">Generate</button>
+  </div>
+</div>
+
+<div id="results" class="hidden">
+
+  <!-- KMAP -->
+  <div class="card">
+    <h2>K-Map</h2>
+    <div id="kmapWrap"></div>
+  </div>
+
+  <!-- DERIVATION -->
+  <div class="card">
+    <h2>Minimization (Quine–McCluskey)</h2>
+    <div class="flex-cols">
+      <div>
+        <h3 style="margin-bottom:4px;">SOP derivation (grouping the 1s)</h3>
+        <div class="steps" id="sopSteps"></div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:4px;">POS derivation (grouping the 0s)</h3>
+        <div class="steps" id="posSteps"></div>
+      </div>
+    </div>
+    <h3 style="margin-bottom:4px;margin-top:14px;">Minimized expressions</h3>
+    <div>SOP (sum of products): <div class="expr" id="sopExpr"></div></div>
+    <div style="margin-top:8px;">POS (product of sums): <div class="expr" id="posExpr"></div></div>
+    <p class="note">Essential prime implicants are selected first; any remaining minterms are covered greedily (a good-enough minimum for classroom-scale problems — not a formally proven global optimum via Petrick's method).</p>
+  </div>
+
+  <!-- CIRCUIT -->
+  <div class="card">
+    <h2>Gate-level Circuit</h2>
+    <div class="gatebar">
+      <button class="secondary active" id="btn-std" onclick="setGateMode('std')">AND-OR-NOT</button>
+      <button class="secondary" id="btn-nand" onclick="setGateMode('nand')">NAND only</button>
+      <button class="secondary" id="btn-nor" onclick="setGateMode('nor')">NOR only</button>
+    </div>
+    <div id="circuitWrap"></div>
+    <p class="note" id="circuitNote"></p>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   STATE
+============================================================ */
+let numVars = 3;
+let varNames = ['A','B','C'];
+let truth = []; // array of {vals:[0/1,...], out: 0|1|'X'}
+let lastResult = null; // {sopTerms, posTerms, sopSteps, posSteps}
+let gateMode = 'std';
+
+/* ============================================================
+   TABS / VAR COUNT
+============================================================ */
+function switchTab(which){
+  document.getElementById('tab-truth').classList.toggle('active', which==='truth');
+  document.getElementById('tab-expr').classList.toggle('active', which==='expr');
+  document.getElementById('pane-truth').classList.toggle('hidden', which!=='truth');
+  document.getElementById('pane-expr').classList.toggle('hidden', which!=='expr');
+}
+
+function onVarCountChange(){
+  numVars = parseInt(document.getElementById('numVars').value);
+  varNames = ['A','B','C','D'].slice(0,numVars);
+  buildTruthTableUI();
+}
+
+function buildTruthTableUI(){
+  truth = [];
+  const rows = Math.pow(2,numVars);
+  for(let i=0;i<rows;i++){
+    const vals = [];
+    for(let b=numVars-1;b>=0;b--) vals.push((i>>b)&1);
+    truth.push({vals, out:0});
+  }
+  renderTruthTableUI();
+}
+
+function renderTruthTableUI(){
+  let html = '<table><tr>';
+  varNames.forEach(v=>html+=`<th>${v}</th>`);
+  html += '<th>Out</th></tr>';
+  truth.forEach((row,i)=>{
+    html += '<tr>';
+    row.vals.forEach(v=>html+=`<td>${v}</td>`);
+    const cls = row.out===1?'v1':(row.out==='X'?'vx':'v0');
+    html += `<td class="outcell ${cls}" onclick="cycleOut(${i})">${row.out}</td>`;
+    html += '</tr>';
+  });
+  html += '</table>';
+  document.getElementById('truthTableWrap').innerHTML = html;
+}
+
+function cycleOut(i){
+  const cur = truth[i].out;
+  truth[i].out = cur===0?1:(cur===1?'X':0);
+  renderTruthTableUI();
+}
+
+/* ============================================================
+   EXPRESSION PARSER (recursive-descent over tokens)
+   Supports: variables (letters), ! prefix NOT, ' postfix NOT,
+   . / & / juxtaposition AND, + / | OR, ^ XOR, parentheses.
+============================================================ */
+function tokenize(expr){
+  const tokens = [];
+  let i=0;
+  while(i<expr.length){
+    const c = expr[i];
+    if(/\s/.test(c)){ i++; continue; }
+    if(/[A-Za-z]/.test(c)){ tokens.push({t:'VAR', v:c.toUpperCase()}); i++; continue; }
+    if(c==="'"){ tokens.push({t:'POSTNOT'}); i++; continue; }
+    if(c==='!'){ tokens.push({t:'NOT'}); i++; continue; }
+    if(c==='.'||c==='&'){ tokens.push({t:'AND'}); i++; continue; }
+    if(c==='+'||c==='|'){ tokens.push({t:'OR'}); i++; continue; }
+    if(c==='^'){ tokens.push({t:'XOR'}); i++; continue; }
+    if(c==='('){ tokens.push({t:'LP'}); i++; continue; }
+    if(c===')'){ tokens.push({t:'RP'}); i++; continue; }
+    i++; // ignore unknown chars
+  }
+  // insert implicit AND between tokens like VAR/RP/POSTNOT-result followed by VAR/NOT/LP
+  const out = [];
+  for(let k=0;k<tokens.length;k++){
+    out.push(tokens[k]);
+    const cur = tokens[k], nxt = tokens[k+1];
+    if(!nxt) continue;
+    const curEndsValue = (cur.t==='VAR'||cur.t==='RP'||cur.t==='POSTNOT');
+    const nxtStartsValue = (nxt.t==='VAR'||nxt.t==='NOT'||nxt.t==='LP');
+    if(curEndsValue && nxtStartsValue) out.push({t:'AND'});
+  }
+  return out;
+}
+
+// Pratt-ish recursive descent. Precedence: POSTNOT/NOT > AND > XOR > OR
+function parseExpr(tokens){
+  let pos = 0;
+  function peek(){ return tokens[pos]; }
+  function next(){ return tokens[pos++]; }
+
+  function parseOr(){
+    let node = parseXor();
+    while(peek() && peek().t==='OR'){ next(); node = {op:'OR', l:node, r:parseXor()}; }
+    return node;
+  }
+  function parseXor(){
+    let node = parseAnd();
+    while(peek() && peek().t==='XOR'){ next(); node = {op:'XOR', l:node, r:parseAnd()}; }
+    return node;
+  }
+  function parseAnd(){
+    let node = parseUnary();
+    while(peek() && peek().t==='AND'){ next(); node = {op:'AND', l:node, r:parseUnary()}; }
+    return node;
+  }
+  function parseUnary(){
+    if(peek() && peek().t==='NOT'){ next(); return {op:'NOT', l:parseUnary()}; }
+    let node = parsePostfix();
+    return node;
+  }
+  function parsePostfix(){
+    let node = parsePrimary();
+    while(peek() && peek().t==='POSTNOT'){ next(); node = {op:'NOT', l:node}; }
+    return node;
+  }
+  function parsePrimary(){
+    const tok = next();
+    if(tok.t==='VAR') return {op:'VAR', name: tok.v};
+    if(tok.t==='LP'){ const n = parseOr(); if(peek() && peek().t==='RP') next(); return n; }
+    return {op:'VAR', name:'?'};
+  }
+  return parseOr();
+}
+
+function evalNode(node, env){
+  switch(node.op){
+    case 'VAR': return env[node.name];
+    case 'NOT': return evalNode(node.l, env) ? 0 : 1;
+    case 'AND': return (evalNode(node.l,env) && evalNode(node.r,env)) ? 1:0;
+    case 'OR':  return (evalNode(node.l,env) || evalNode(node.r,env)) ? 1:0;
+    case 'XOR': return (evalNode(node.l,env) ^ evalNode(node.r,env)) ? 1:0;
+  }
+}
+
+function detectVarsInExpr(expr){
+  const set = new Set();
+  for(const c of expr) if(/[A-Za-z]/.test(c)) set.add(c.toUpperCase());
+  return Array.from(set).sort();
+}
+
+function buildTruthFromExpression(expr){
+  const vars = detectVarsInExpr(expr);
+  if(vars.length===0) throw new Error('No variables found in expression.');
+  numVars = Math.min(vars.length,4);
+  varNames = vars.slice(0,4);
+  document.getElementById('numVars').value = String(numVars);
+  const tokens = tokenize(expr);
+  const ast = parseExpr(tokens);
+  truth = [];
+  const rows = Math.pow(2,numVars);
+  for(let i=0;i<rows;i++){
+    const vals = [];
+    const env = {};
+    for(let b=numVars-1, idx=0; b>=0; b--, idx++){
+      const bit = (i>>b)&1;
+      vals.push(bit);
+      env[varNames[idx]] = bit;
+    }
+    const out = evalNode(ast, env);
+    truth.push({vals, out});
+  }
+}
+
+/* ============================================================
+   K-MAP RENDER (Gray-code layout, 2/3/4 variables)
+============================================================ */
+function grayCode(bits){
+  const n = Math.pow(2,bits);
+  const seq = [];
+  for(let i=0;i<n;i++) seq.push(i ^ (i>>1));
+  return seq;
+}
+function bitsToStr(val,bits){ return val.toString(2).padStart(bits,'0'); }
+
+function mintermIndexFromBits(bitObj){
+  // bitObj: array in order of varNames, MSB..LSB matches truth.vals ordering
+  let idx=0;
+  for(const b of bitObj) idx = (idx<<1)|b;
+  return idx;
+}
+
+function renderKmap(){
+  const wrap = document.getElementById('kmapWrap');
+  let rowVars, colVars;
+  if(numVars===2){ rowVars=[varNames[0]]; colVars=[varNames[1]]; }
+  else if(numVars===3){ rowVars=[varNames[0]]; colVars=[varNames[1],varNames[2]]; }
+  else { rowVars=[varNames[0],varNames[1]]; colVars=[varNames[2],varNames[3]]; }
+
+  const rowBits = rowVars.length, colBits = colVars.length;
+  const rowGray = grayCode(rowBits), colGray = grayCode(colBits);
+
+  let html = `<table><tr><th>${rowVars.join('')}\\${colVars.join('')}</th>`;
+  colGray.forEach(c=>html+=`<th>${bitsToStr(c,colBits)}</th>`);
+  html += '</tr>';
+
+  rowGray.forEach(r=>{
+    html += `<tr><th>${bitsToStr(r,rowBits)}</th>`;
+    colGray.forEach(c=>{
+      // reconstruct full bit vector in varNames order
+      const rBitsArr = bitsToStr(r,rowBits).split('').map(Number);
+      const cBitsArr = bitsToStr(c,colBits).split('').map(Number);
+      const full = rBitsArr.concat(cBitsArr);
+      const idx = mintermIndexFromBits(full);
+      const val = truth[idx].out;
+      const cls = val===1?'v1':(val==='X'?'vx':'v0');
+      html += `<td class="kmapcell ${cls}">${val}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</table>';
+  html += `<p class="note">Rows: ${rowVars.join('')}, Columns: ${colVars.join('')} (Gray-code ordered so adjacent cells differ by one bit).</p>`;
+  wrap.innerHTML = html;
+}
+
+/* ============================================================
+   QUINE-McCLUSKEY
+============================================================ */
+function countOnes(s){ let c=0; for(const ch of s) if(ch==='1') c++; return c; }
+
+function combinable(a,b){
+  if(a.length!==b.length) return null;
+  let diff=-1;
+  for(let i=0;i<a.length;i++){
+    if(a[i]!==b[i]){
+      if(a[i]==='-'||b[i]==='-') return null; // dash positions must match
+      if(diff!==-1) return null; // more than one difference
+      diff=i;
+    }
+  }
+  if(diff===-1) return null;
+  return a.substring(0,diff)+'-'+a.substring(diff+1);
+}
+
+function runQM(targetMinterms, dontCares, bits){
+  // returns {primeImplicants: [{term, minterms:Set}], stepsLog: [string,...]}
+  const allTerms = new Map(); // term -> Set(minterms)
+  const initial = new Set([...targetMinterms, ...dontCares]);
+  let currentGroups = {}; // count of ones -> array of {term, minterms:Set}
+  initial.forEach(m=>{
+    const term = m.toString(2).padStart(bits,'0');
+    const ones = countOnes(term);
+    if(!currentGroups[ones]) currentGroups[ones]=[];
+    currentGroups[ones].push({term, minterms:new Set([m])});
+  });
+
+  const primeImplicants = new Map(); // term -> minterms Set
+  const stepsLog = [];
+  let pass=1;
+
+  while(true){
+    const keys = Object.keys(currentGroups).map(Number).sort((a,b)=>a-b);
+    if(keys.length===0) break;
+    const nextGroups = {};
+    const used = new Set();
+    let anyCombined = false;
+    stepsLog.push(`--- Pass ${pass}: grouping by number of 1s ---`);
+
+    for(let gi=0; gi<keys.length-1; gi++){
+      const g1 = currentGroups[keys[gi]] || [];
+      const g2 = currentGroups[keys[gi+1]] || [];
+      for(const a of g1){
+        for(const b of g2){
+          const combined = combinable(a.term,b.term);
+          if(combined){
+            anyCombined = true;
+            used.add(a.term+'|'+[...a.minterms].sort().join(','));
+            used.add(b.term+'|'+[...b.minterms].sort().join(','));
+            const ones = countOnes(combined.replace(/-/g,'0'));
+            // careful: count ones ignoring dash properly
+            const onesCount = countOnes(combined);
+            const key = onesCount;
+            if(!nextGroups[key]) nextGroups[key]=[];
+            const unionM = new Set([...a.minterms, ...b.minterms]);
+            // avoid duplicate combined term in same group
+            let existing = nextGroups[key].find(x=>x.term===combined);
+            if(existing){ unionM.forEach(m=>existing.minterms.add(m)); }
+            else nextGroups[key].push({term:combined, minterms:unionM});
+            stepsLog.push(`${a.term} (m:${[...a.minterms].join(',')}) + ${b.term} (m:${[...b.minterms].join(',')}) → ${combined}`);
+          }
+        }
+      }
+    }
+
+    // anything not used in this pass is a prime implicant
+    keys.forEach(k=>{
+      (currentGroups[k]||[]).forEach(item=>{
+        const sig = item.term+'|'+[...item.minterms].sort().join(',');
+        if(!used.has(sig)){
+          if(!primeImplicants.has(item.term)) primeImplicants.set(item.term, new Set());
+          item.minterms.forEach(m=>primeImplicants.get(item.term).add(m));
+        }
+      });
+    });
+
+    if(!anyCombined) break;
+    currentGroups = nextGroups;
+    pass++;
+  }
+
+  const piList = [...primeImplicants.entries()].map(([term,mset])=>({term, minterms:mset}));
+  return {primeImplicants: piList, stepsLog};
+}
+
+function selectEssential(piList, requiredMinterms, stepsLog){
+  const required = new Set(requiredMinterms);
+  const chosen = [];
+  const covered = new Set();
+
+  // essential PI pass
+  requiredMinterms.forEach(m=>{
+    const covering = piList.filter(pi=>pi.minterms.has(m));
+    if(covering.length===1){
+      const pi = covering[0];
+      if(!chosen.includes(pi)){
+        chosen.push(pi);
+        pi.minterms.forEach(x=>{ if(required.has(x)) covered.add(x); });
+        stepsLog.push(`Minterm ${m} is only covered by ${pi.term} → essential prime implicant.`);
+      }
+    }
+  });
+
+  // greedy cover remaining
+  let remaining = requiredMinterms.filter(m=>!covered.has(m));
+  while(remaining.length>0){
+    let best=null, bestCount=-1;
+    for(const pi of piList){
+      if(chosen.includes(pi)) continue;
+      const cnt = remaining.filter(m=>pi.minterms.has(m)).length;
+      if(cnt>bestCount){ bestCount=cnt; best=pi; }
+    }
+    if(!best || bestCount<=0) break;
+    chosen.push(best);
+    stepsLog.push(`Greedily selecting ${best.term} to cover remaining minterms: ${remaining.filter(m=>best.minterms.has(m)).join(',')}`);
+    remaining = remaining.filter(m=>!best.minterms.has(m));
+  }
+  return chosen;
+}
+
+function termToSOPLiteral(term){
+  const lits = [];
+  for(let i=0;i<term.length;i++){
+    if(term[i]==='1') lits.push({name:varNames[i], comp:false});
+    else if(term[i]==='0') lits.push({name:varNames[i], comp:true});
+  }
+  return lits; // empty means constant 1
+}
+
+function literalsToString(lits, comp){
+  if(lits.length===0) return '1';
+  return lits.map(l=>l.name + ((l.comp!==comp)?"'":'')).join('');
+}
+
+/* ============================================================
+   MAIN GENERATE
+============================================================ */
+function generateAll(){
+  const exprVisible = !document.getElementById('pane-expr').classList.contains('hidden');
+  if(exprVisible){
+    const expr = document.getElementById('exprInput').value.trim();
+    if(!expr){ alert('Enter an expression.'); return; }
+    try{ buildTruthFromExpression(expr); }
+    catch(e){ alert('Could not parse expression: '+e.message); return; }
+    renderTruthTableUI(); // reflect into truth-table tab too
+  } else {
+    if(truth.length===0) buildTruthTableUI();
+  }
+
+  const ones = [], zeros = [], dc = [];
+  truth.forEach((row,i)=>{
+    if(row.out===1) ones.push(i);
+    else if(row.out===0) zeros.push(i);
+    else dc.push(i);
+  });
+
+  // --- SOP: group the 1s ---
+  const sopSteps = [];
+  const sopQM = runQM(ones, dc, numVars);
+  const sopChosen = ones.length===0 ? [] : selectEssential(sopQM.primeImplicants, ones, sopSteps);
+  const sopTerms = ones.length===0 ? [] : sopChosen.map(pi=>termToSOPLiteral(pi.term));
+
+  // --- POS: group the 0s (i.e. run QM treating zeros as the "ones" of F') ---
+  const posSteps = [];
+  const posQM = runQM(zeros, dc, numVars);
+  const posChosen = zeros.length===0 ? [] : selectEssential(posQM.primeImplicants, zeros, posSteps);
+  // each chosen term (a product-term of F') becomes a SUM term of inverted literals in POS of F
+  const posTerms = zeros.length===0 ? [] : posChosen.map(pi=>termToSOPLiteral(pi.term));
+
+  lastResult = {sopTerms, posTerms};
+
+  // render K-map
+  renderKmap();
+
+  // render steps
+  document.getElementById('sopSteps').innerHTML = sopQM.stepsLog.concat(sopSteps).map(s=>escapeHtml(s)).join('<br>') || '(no 1s to group — function is 0)';
+  document.getElementById('posSteps').innerHTML = posQM.stepsLog.concat(posSteps).map(s=>escapeHtml(s)).join('<br>') || '(no 0s to group — function is 1)';
+
+  // render expressions
+  const sopStr = ones.length===0 ? '0' : sopTerms.map(lits=>literalsToString(lits,false)).join(' + ');
+  const posStr = zeros.length===0 ? '1' : posTerms.map(lits=>'('+literalsToString(lits,true)+')').join('');
+  document.getElementById('sopExpr').textContent = 'F = ' + sopStr;
+  document.getElementById('posExpr').textContent = 'F = ' + posStr;
+
+  document.getElementById('results').classList.remove('hidden');
+  drawCircuit();
+}
+
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+/* ============================================================
+   GATE MODE + CIRCUIT SVG
+============================================================ */
+function setGateMode(mode){
+  gateMode = mode;
+  ['std','nand','nor'].forEach(m=>document.getElementById('btn-'+m).classList.toggle('active', m===mode));
+  drawCircuit();
+}
+
+// literalsToString for POS "sum" grouping (each POS factor is OR of inverted literals)
+function posFactorLiterals(lits){
+  // lits already represent the AND-term of F'; invert each for the OR factor
+  return lits.map(l=>({name:l.name, comp: !l.comp}));
+}
+
+function drawCircuit(){
+  const svgWrap = document.getElementById('circuitWrap');
+  const noteEl = document.getElementById('circuitNote');
+  if(!lastResult){ svgWrap.innerHTML=''; return; }
+
+  let terms, level1Op, level2Op, factorIsOR; // factorIsOR: true for POS (level1 gates are OR), false for SOP (level1 AND)
+  if(gateMode==='nor'){
+    terms = lastResult.posTerms.map(posFactorLiterals);
+    level1Op='OR'; level2Op='AND'; factorIsOR=true;
+    noteEl.textContent = 'POS realized as two-level NOR-NOR: replacing every OR/AND gate of a Product-of-Sums circuit with a NOR gate (same wiring) reproduces the same function, by double negation — this is the standard "universal NOR" trick.';
+  } else if(gateMode==='nand'){
+    terms = lastResult.sopTerms;
+    level1Op='AND'; level2Op='OR'; factorIsOR=false;
+    noteEl.textContent = 'SOP realized as two-level NAND-NAND: replacing every AND/OR gate of a Sum-of-Products circuit with a NAND gate (same wiring) reproduces the same function, by double negation — the standard "universal NAND" trick.';
+  } else {
+    terms = lastResult.sopTerms;
+    level1Op='AND'; level2Op='OR'; factorIsOR=false;
+    noteEl.textContent = 'Direct two-level AND-OR-NOT realization of the minimized SOP expression.';
+  }
+
+  if(terms.length===0){ svgWrap.innerHTML = '<p class="note">Constant function — no gates needed.</p>'; return; }
+
+  svgWrap.innerHTML = buildSVG(terms, level1Op, level2Op, gateMode);
+}
+
+// Build an SVG two-level circuit. terms: array of literal-arrays. Each literal {name, comp}.
+function buildSVG(terms, level1Op, level2Op, mode){
+  const gateW = 70, gateH = 40, litGap = 26, gateGapY = 70;
+  const leftX = 90;
+  const numTerms = terms.length;
+  const totalH = Math.max(220, numTerms*gateGapY + 80);
+  const level1X = leftX + 140;
+  const level2X = level1X + 220;
+  const svgW = level2X + 160;
+
+  let svg = `<svg viewBox="0 0 ${svgW} ${totalH}" width="100%" style="max-width:900px;">`;
+  svg += gateDefs();
+
+  const level1Centers = [];
+  terms.forEach((lits, ti)=>{
+    const cy = 60 + ti*gateGapY;
+    level1Centers.push(cy);
+    // input lines + labels + inverter bubbles as needed
+    const startY = cy - (lits.length-1)*litGap/2;
+    lits.forEach((lit, li)=>{
+      const y = startY + li*litGap;
+      svg += `<text x="${leftX-70}" y="${y+4}" fill="#e2e8f0" font-size="13">${lit.name}</text>`;
+      svg += `<line x1="${leftX-50}" y1="${y}" x2="${level1X-38}" y2="${y}" stroke="#94a3b8" stroke-width="1.5"/>`;
+      if(lit.comp){
+        svg += `<circle cx="${level1X-34}" cy="${y}" r="4" fill="#0b1220" stroke="#94a3b8" stroke-width="1.5"/>`;
+      }
+    });
+    // gate 1 body
+    const bubbleOut = (mode==='nand') || (mode==='nor'); // level1 gate rendered with output bubble in NAND/NOR mode
+    svg += drawGateShape(level1X, cy, gateW, gateH, level1Op, bubbleOut, lits.length);
+    // connector to level2
+    svg += `<line x1="${level1X+gateW+(bubbleOut?7:0)}" y1="${cy}" x2="${level2X-38}" y2="${cy}" stroke="#94a3b8" stroke-width="1.5"/>`;
+  });
+
+  // level 2 gate combining all term outputs
+  const cy2 = totalH/2;
+  const bubbleOut2 = (mode==='nand') || (mode==='nor');
+  svg += drawGateShape(level2X, cy2, gateW, gateH, level2Op, bubbleOut2, numTerms);
+  const outX = level2X+gateW+(bubbleOut2?7:0);
+  svg += `<line x1="${outX}" y1="${cy2}" x2="${outX+40}" y2="${cy2}" stroke="#94a3b8" stroke-width="1.5"/>`;
+  svg += `<text x="${outX+46}" y="${cy2+5}" fill="#38bdf8" font-size="14" font-weight="700">F</text>`;
+
+  svg += `</svg>`;
+  return svg;
+}
+
+function gateDefs(){ return ''; }
+
+// Draws an AND/OR/XOR-shaped gate at (cx,cy) center, with optional output inversion bubble.
+function drawGateShape(x, cy, w, h, op, bubble, numInputs){
+  const top = cy - h/2;
+  let path='';
+  if(op==='AND'){
+    // rectangle with rounded right side (AND shape)
+    path = `M ${x} ${top} h ${w*0.55} a ${h/2} ${h/2} 0 0 1 0 ${h} h -${w*0.55} z`;
+  } else { // OR shape: curved back, pointed front
+    path = `M ${x} ${top}
+             q ${w*0.35} 0 ${w*0.55} ${h/2}
+             q -${w*0.2} ${h/2} -${w*0.55} ${h/2}
+             q ${w*0.18} -${h/2} 0 -${h} z`;
+  }
+  let g = `<path d="${path}" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>`;
+  const label = op==='AND' ? (bubble?'NAND':'AND') : (bubble?'NOR':'OR');
+  g += `<text x="${x+w*0.22}" y="${cy+4}" fill="#e2e8f0" font-size="11" font-weight="600">${label}</text>`;
+  if(bubble){
+    g += `<circle cx="${x+w+4}" cy="${cy}" r="5" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>`;
+  }
+  return g;
+}
+
+/* init */
+buildTruthTableUI();
+</script>
+</body>
+</html>
