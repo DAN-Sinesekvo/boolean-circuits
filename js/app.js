@@ -15,6 +15,11 @@ let truth = []; // array of {vals:[0/1,...], out: 0|1|'X'}
 let lastResult = null; // {sopTerms, posTerms} from the last Generate
 let gateMode = 'simplified';
 let inputMode = 'truth';
+const truthTableViews = {
+  editable: {expanded:false, rows:null, interactive:true, names:[]},
+  result: {expanded:false, rows:null, interactive:false, names:[]}
+};
+const truthTableObservers = [];
 
 /* ============================================================
    TABS / VAR COUNT
@@ -29,6 +34,7 @@ function switchTab(which){
     tab.tabIndex = selected ? 0 : -1;
     document.getElementById(`pane-${mode}`).classList.toggle('hidden', !selected);
   });
+  requestAnimationFrame(renderVisibleTruthTables);
 }
 
 document.querySelector('.tabs').addEventListener('keydown', e=>{
@@ -47,6 +53,7 @@ document.querySelector('.tabs').addEventListener('keydown', e=>{
 function onVarCountChange(){
   numVars = parseInt(document.getElementById('numVars').value);
   varNames = ['A','B','C','D','E','F'].slice(0,numVars);
+  resetTruthTableExpansion();
   buildTruthTableUI();
   setExprAutoNote('');
   setTermsNote('');
@@ -66,6 +73,7 @@ function setTermsNote(msg, isError, inputId){
 function updateTermNotation(){
   const kind = document.querySelector('input[name="termKind"]:checked').value;
   document.getElementById('termsPrefix').textContent = kind==='minterms' ? 'Σm(' : 'ΠM(';
+  document.getElementById('termsInputLabel').textContent = kind==='minterms' ? 'Minterm indices' : 'Maxterm indices';
   if(document.getElementById('termsNote').classList.contains('error')) setTermsNote('');
 }
 
@@ -100,9 +108,9 @@ function buildTruthTableUI(){
 
 // Builds one <table> for a slice of truth-table rows. indexOffset maps rows[0]
 // back to its real index in `truth`, so click handlers toggle the correct row.
-function buildSingleTruthTable(rows, interactive, indexOffset){
+function buildSingleTruthTable(rows, interactive, indexOffset, names=varNames){
   let html = '<table><tr>';
-  varNames.forEach(v=>html+=`<th>${v}</th>`);
+  names.forEach(v=>html+=`<th>${v}</th>`);
   html += '<th>Out</th></tr>';
   rows.forEach((row,i)=>{
     const idx = indexOffset + i;
@@ -112,7 +120,7 @@ function buildSingleTruthTable(rows, interactive, indexOffset){
     if(interactive){
       html += `<td class="outcell ${cls}" onclick="cycleOut(${idx})">${row.out}</td>`;
     } else {
-      html += `<td class="${cls}" style="font-weight:700;">${row.out}</td>`;
+      html += `<td class="output-value ${cls}">${row.out}</td>`;
     }
     html += '</tr>';
   });
@@ -120,21 +128,109 @@ function buildSingleTruthTable(rows, interactive, indexOffset){
   return html;
 }
 
-// Splits into two side-by-side tables once there are 32+ rows (5+ variables), since one long table gets unwieldy.
-function buildTruthTableHTML(rows, interactive){
-  if(rows.length >= 32){
-    const half = rows.length/2;
-    let html = '<div class="flex-cols">';
-    html += '<div>' + buildSingleTruthTable(rows.slice(0,half), interactive, 0) + '</div>';
-    html += '<div>' + buildSingleTruthTable(rows.slice(half), interactive, half) + '</div>';
-    html += '</div>';
-    return html;
+function resetTruthTableExpansion(){
+  truthTableViews.editable.expanded = false;
+  truthTableViews.result.expanded = false;
+}
+
+// Measure a real table with the current fonts and cell padding, then select the
+// largest supported power-of-two layout that fits the destination container.
+function measureTruthTableWidth(target, rows, names){
+  if(!target.clientWidth || !rows.length) return 0;
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;width:max-content;pointer-events:none;';
+  probe.innerHTML = buildSingleTruthTable(rows.slice(0,1), false, 0, names);
+  target.appendChild(probe);
+  const width = probe.querySelector('table').getBoundingClientRect().width;
+  probe.remove();
+  return width;
+}
+
+function chooseTruthTableColumns(target, rows, expanded, names){
+  if(expanded || rows.length < 32) return 1;
+  const maxColumns = rows.length >= 64 ? 4 : 2;
+  const tableWidth = measureTruthTableWidth(target, rows, names);
+  const available = target.clientWidth;
+  const gap = 24;
+  for(let columns=maxColumns; columns>=2; columns/=2){
+    if(columns * tableWidth + (columns - 1) * gap <= available) return columns;
   }
-  return buildSingleTruthTable(rows, interactive, 0);
+  return 1;
+}
+
+function buildTruthTableHTML(rows, interactive, columns, expanded, viewName, names){
+  const isLarge = rows.length === 32 || rows.length === 64;
+  const collapsed = isLarge && columns === 1 && !expanded;
+  const visibleRows = collapsed ? rows.slice(0,16) : rows;
+  const chunkSize = Math.ceil(visibleRows.length / columns);
+  let html = `<div class="truth-table-grid cols-${columns}${collapsed ? ' truth-table-collapsed' : ''}">`;
+  for(let offset=0; offset<visibleRows.length; offset+=chunkSize){
+    html += buildSingleTruthTable(visibleRows.slice(offset,offset+chunkSize), interactive, offset, names);
+  }
+  if(collapsed){
+    html += '<div class="truth-table-more-row"><button type="button" class="truth-table-more" '
+      + `onclick="expandTruthTable('${viewName}')" aria-label="Show all ${rows.length} truth table rows">`
+      + 'Show more <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderTruthTable(target, rows, interactive, viewName, names=varNames){
+  if(!target || !rows) return;
+  const view = truthTableViews[viewName];
+  view.rows = rows;
+  view.interactive = interactive;
+  view.names = names.slice();
+  const columns = chooseTruthTableColumns(target, rows, view.expanded, view.names);
+  target.innerHTML = buildTruthTableHTML(rows, interactive, columns, view.expanded, viewName, view.names);
+}
+
+function renderTruthTableView(viewName){
+  const view = truthTableViews[viewName];
+  const id = viewName==='editable' ? 'truthTableWrap' : 'truthTableResultWrap';
+  const target = document.getElementById(id);
+  if(view.rows && target && target.clientWidth){
+    renderTruthTable(target, view.rows, view.interactive, viewName, view.names);
+  }
+}
+
+function renderVisibleTruthTables(){
+  renderTruthTableView('editable');
+  renderTruthTableView('result');
+}
+
+function expandTruthTable(viewName){
+  truthTableViews[viewName].expanded = true;
+  renderTruthTableView(viewName);
 }
 
 function renderTruthTableUI(){
-  document.getElementById('truthTableWrap').innerHTML = buildTruthTableHTML(truth, true);
+  renderTruthTable(document.getElementById('truthTableWrap'), truth, true, 'editable');
+}
+
+function renderResultTruthTable(){
+  renderTruthTable(document.getElementById('truthTableResultWrap'), truth, false, 'result');
+}
+
+function canonicalNotation(prefix, indices, dontCares){
+  return `F = ${prefix}(${indices.join(', ')}) + d(${dontCares.join(', ')})`;
+}
+
+function renderSourceResult(minterms, maxterms, dontCares){
+  const showCanonicalTerms = inputMode==='truth';
+  const truthWrap = document.getElementById('truthTableResultWrap');
+  const canonicalWrap = document.getElementById('canonicalTermsResultWrap');
+  document.getElementById('sourceResultHeading').textContent = showCanonicalTerms ? 'Canonical Terms' : 'Truth Table';
+  truthWrap.classList.toggle('hidden', showCanonicalTerms);
+  canonicalWrap.classList.toggle('hidden', !showCanonicalTerms);
+
+  if(showCanonicalTerms){
+    document.getElementById('canonicalMinterms').textContent = canonicalNotation('Σm', minterms, dontCares);
+    document.getElementById('canonicalMaxterms').textContent = canonicalNotation('ΠM', maxterms, dontCares);
+  } else {
+    renderResultTruthTable();
+  }
 }
 
 function cycleOut(i){
@@ -163,10 +259,8 @@ function generateAll(){
     setExprAutoNote(exprInfo.autoIncreased
       ? `Variable count changed to ${exprInfo.finalNumVars} to fit this expression.`
       : '');
+    resetTruthTableExpansion();
     renderTruthTableUI(); // reflect into truth-table tab too
-    // Also show the generated truth table alongside the results, for convenience.
-    document.getElementById('truthTableResultWrap').innerHTML = buildTruthTableHTML(truth, false);
-    document.getElementById('truthTableResultCard').classList.remove('hidden');
   } else if(inputMode==='terms') {
     const kind = document.querySelector('input[name="termKind"]:checked').value;
     let termsInfo;
@@ -184,14 +278,12 @@ function generateAll(){
     setTermsNote(termsInfo.autoIncreased
       ? `Variable count changed to ${numVars} so index ${termsInfo.largestIndex} fits.`
       : '', false);
+    resetTruthTableExpansion();
     renderTruthTableUI();
-    document.getElementById('truthTableResultWrap').innerHTML = buildTruthTableHTML(truth, false);
-    document.getElementById('truthTableResultCard').classList.remove('hidden');
   } else {
     setExprAutoNote('');
     setTermsNote('');
     if(truth.length===0) buildTruthTableUI();
-    document.getElementById('truthTableResultCard').classList.add('hidden');
   }
 
   const ones = [], zeros = [], dc = [];
@@ -200,6 +292,8 @@ function generateAll(){
     else if(row.out===0) zeros.push(i);
     else dc.push(i);
   });
+
+  renderSourceResult(ones, zeros, dc);
 
   // --- SOP: group the 1s ---
   const sopSteps = [];
@@ -246,3 +340,12 @@ function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
 /* init */
 buildTruthTableUI();
+['truthTableWrap','truthTableResultWrap'].forEach(id=>{
+  const target = document.getElementById(id);
+  if(window.ResizeObserver){
+    const observer = new ResizeObserver(renderVisibleTruthTables);
+    observer.observe(target);
+    truthTableObservers.push(observer);
+  }
+});
+if(!window.ResizeObserver) window.addEventListener('resize', renderVisibleTruthTables);
