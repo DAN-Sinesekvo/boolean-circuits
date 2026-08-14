@@ -88,8 +88,8 @@ function detectVarsInExpr(expr){
   return Array.from(set).sort();
 }
 
-// The variable-count dropdown only lists up to 5 by default; add "6" on the fly if an
-// expression needs it, instead of leaving the dropdown out of sync.
+// Keep the dropdown synchronized if callers ever supply a supported count that is
+// not already represented in the markup.
 function ensureNumVarOption(n){
   const sel = document.getElementById('numVars');
   const has = Array.from(sel.options).some(o=>o.value===String(n));

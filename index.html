@@ -3,122 +3,193 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>K-Map & Logic Minimizer</title>
+<meta name="color-scheme" content="light dark">
+<title>Boolean Minimizer</title>
 <link rel="stylesheet" href="css/styles.css">
+<script src="js/theme.js"></script>
 </head>
 <body>
+<div class="page-shell">
 
-<h1>K-Map &amp; Boolean Logic Minimizer</h1>
-<div class="sub">Choose how you want to enter the function, then generate the results.</div>
-
-<!-- INPUT CARD -->
-<div class="card">
-  <div class="tabs" role="tablist" aria-label="Input method">
-    <button type="button" class="tab active" id="tab-truth" role="tab" aria-selected="true" aria-controls="pane-truth" tabindex="0" onclick="switchTab('truth')">Truth Table</button>
-    <button type="button" class="tab" id="tab-expr" role="tab" aria-selected="false" aria-controls="pane-expr" tabindex="-1" onclick="switchTab('expr')">Logical Expression</button>
-    <button type="button" class="tab" id="tab-terms" role="tab" aria-selected="false" aria-controls="pane-terms" tabindex="-1" onclick="switchTab('terms')">Minterms / Maxterms</button>
+<header class="page-header">
+  <div>
+    <h1>Boolean Minimizer</h1>
+    <div class="subtitle">Minimize and analyze Boolean functions.</div>
   </div>
+  <button type="button" class="theme-toggle" id="themeToggle" role="switch" aria-checked="false" aria-label="Switch to dark theme">
+    <span class="theme-toggle-icon" aria-hidden="true">☀</span>
+    <span class="theme-toggle-icon" aria-hidden="true">☾</span>
+    <span class="theme-toggle-thumb" aria-hidden="true"></span>
+  </button>
+</header>
 
-  <div class="row">
-    <label>Number of variables</label>
-    <select id="numVars" onchange="onVarCountChange()">
-      <option value="2" selected>2</option>
-      <option value="3">3</option>
-      <option value="4">4</option>
-      <option value="5">5</option>
-    </select>
-    <span class="note">Choose 2–5 variables. Expressions and term lists can expand to 6 automatically.</span>
-  </div>
-
-  <div id="pane-truth" role="tabpanel" aria-labelledby="tab-truth">
-    <p class="note">Select an output to change it between <b>0, 1, and X (don’t care)</b>.</p>
-    <div id="truthTableWrap"></div>
-  </div>
-
-  <div id="pane-expr" class="hidden" role="tabpanel" aria-labelledby="tab-expr">
-    <p class="note">
-      Use variables A–F. Write NOT as <code>!A</code> or <code>A'</code>, AND as <code>AB</code> or <code>A.B</code>,
-      OR as <code>A+B</code>, and XOR as <code>A^B</code>. Parentheses work too.
-    </p>
-    <input class="main-input" type="text" id="exprInput" placeholder="e.g. A'B + AC' + BC" aria-describedby="exprAutoNote">
-    <p class="note status-note hidden" id="exprAutoNote" role="status" aria-live="polite"></p>
-  </div>
-
-  <div id="pane-terms" class="hidden" role="tabpanel" aria-labelledby="tab-terms">
-    <fieldset class="term-kind">
-      <legend>Term type</legend>
-      <label><input type="radio" name="termKind" value="minterms" checked onchange="updateTermNotation()"> Minterms</label>
-      <label><input type="radio" name="termKind" value="maxterms" onchange="updateTermNotation()"> Maxterms</label>
-    </fieldset>
-    <div class="notation-fields">
-      <label class="notation-field" for="termsInput">
-        <span id="termsPrefix" class="notation-prefix">Σm(</span>
-        <input type="text" id="termsInput" inputmode="numeric" placeholder="1, 3, 7" aria-describedby="termsHelp termsNote">
-        <span class="notation-suffix">)</span>
-      </label>
-      <label class="notation-field" for="dontCaresInput">
-        <span class="notation-prefix">d(</span>
-        <input type="text" id="dontCaresInput" inputmode="numeric" placeholder="0, 2" aria-describedby="termsHelp termsNote">
-        <span class="notation-suffix">)</span>
-      </label>
+<main>
+  <!-- INPUT CARD -->
+  <section class="card input-card" aria-labelledby="inputHeading">
+    <div class="card-header">
+      <h2 id="inputHeading">Function Input</h2>
     </div>
-    <p class="note" id="termsHelp">Separate indices with commas or spaces. Leave a box empty if there are none.</p>
-    <p class="note status-note hidden" id="termsNote" role="status" aria-live="polite"></p>
-  </div>
-
-  <div class="row" style="margin-top:14px;">
-    <button onclick="generateAll()">Generate results</button>
-  </div>
-</div>
-
-<div id="results" class="hidden">
-
-  <!-- TRUTH TABLE (shown for generated expression/canonical-term input) -->
-  <div class="card hidden" id="truthTableResultCard">
-    <h2>Truth Table</h2>
-    <div id="truthTableResultWrap"></div>
-  </div>
-
-  <!-- KMAP -->
-  <div class="card">
-    <h2>K-Map</h2>
-    <div id="kmapWrap"></div>
-  </div>
-
-  <!-- DERIVATION -->
-  <div class="card">
-    <h2>Minimization (Quine–McCluskey)</h2>
-    <div class="flex-cols">
-      <div>
-        <h3 style="margin-bottom:4px;">SOP groups (1s)</h3>
-        <div class="steps" id="sopSteps"></div>
+    <div class="card-body">
+      <div class="tabs" role="tablist" aria-label="Input method">
+        <button type="button" class="tab active" id="tab-truth" role="tab" aria-selected="true" aria-controls="pane-truth" tabindex="0" onclick="switchTab('truth')">Truth Table</button>
+        <button type="button" class="tab" id="tab-expr" role="tab" aria-selected="false" aria-controls="pane-expr" tabindex="-1" onclick="switchTab('expr')">Expression</button>
+        <button type="button" class="tab" id="tab-terms" role="tab" aria-selected="false" aria-controls="pane-terms" tabindex="-1" onclick="switchTab('terms')">Canonical Terms</button>
       </div>
-      <div>
-        <h3 style="margin-bottom:4px;">POS groups (0s)</h3>
-        <div class="steps" id="posSteps"></div>
+
+      <div class="field-group variable-field">
+        <label class="field-label" for="numVars">Number of variables</label>
+        <select id="numVars" onchange="onVarCountChange()">
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+        </select>
+      </div>
+
+      <div id="pane-truth" role="tabpanel" aria-labelledby="tab-truth">
+        <p class="help-panel">Select an output to change it between <strong>0, 1, and X (don’t care)</strong>.</p>
+        <div id="truthTableWrap"></div>
+      </div>
+
+      <div id="pane-expr" class="hidden" role="tabpanel" aria-labelledby="tab-expr">
+        <div class="field-group expression-field">
+          <label class="field-label" for="exprInput">Boolean expression</label>
+          <input class="main-input" type="text" id="exprInput" placeholder="e.g. A'B + AC' + BC" aria-describedby="exprHelp exprAutoNote">
+        </div>
+        <p class="help-panel" id="exprHelp">
+          Use variables A–F. Write NOT as <code>!A</code> or <code>A'</code>, AND as <code>AB</code> or <code>A.B</code>,
+          OR as <code>A+B</code>, and XOR as <code>A^B</code>. Parentheses work too.
+        </p>
+        <p class="status-message hidden" id="exprAutoNote" role="status" aria-live="polite"></p>
+      </div>
+
+      <div id="pane-terms" class="hidden" role="tabpanel" aria-labelledby="tab-terms">
+        <fieldset class="term-kind">
+          <legend>Term type</legend>
+          <label><input type="radio" name="termKind" value="minterms" checked onchange="updateTermNotation()"> Minterms</label>
+          <label><input type="radio" name="termKind" value="maxterms" onchange="updateTermNotation()"> Maxterms</label>
+        </fieldset>
+        <div class="notation-fields">
+          <div class="field-group notation-field-group">
+            <label class="field-label" id="termsInputLabel" for="termsInput">Minterm indices</label>
+            <div class="notation-field">
+              <span id="termsPrefix" class="notation-prefix">Σm(</span>
+              <input type="text" id="termsInput" inputmode="numeric" placeholder="1, 3, 7" aria-describedby="termsHelp termsNote">
+              <span class="notation-suffix">)</span>
+            </div>
+          </div>
+          <div class="field-group notation-field-group">
+            <label class="field-label" for="dontCaresInput">Don’t-care indices</label>
+            <div class="notation-field">
+              <span class="notation-prefix">d(</span>
+              <input type="text" id="dontCaresInput" inputmode="numeric" placeholder="0, 2" aria-describedby="termsHelp termsNote">
+              <span class="notation-suffix">)</span>
+            </div>
+          </div>
+        </div>
+        <p class="help-panel" id="termsHelp">Separate indices with commas or spaces. Leave a box empty if there are none.</p>
+        <p class="status-message hidden" id="termsNote" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="form-actions">
+        <button onclick="generateAll()">Minimize Function</button>
       </div>
     </div>
-    <h3 style="margin-bottom:4px;margin-top:14px;">Minimized expressions</h3>
-    <div>SOP (sum of products): <div class="expr" id="sopExpr"></div></div>
-    <div style="margin-top:8px;">POS (product of sums): <div class="expr" id="posExpr"></div></div>
-  </div>
+  </section>
 
-  <!-- CIRCUIT -->
-  <div class="card">
-    <h2>Circuit Diagram</h2>
-    <div class="gatebar">
-      <label for="gateModeSelect" style="align-self:center;">Gate type:</label>
-      <select id="gateModeSelect" onchange="setGateMode(this.value)">
-        <option value="simplified" selected>Simplified (mixed gates)</option>
-        <option value="basic">AND / OR / NOT only</option>
-        <option value="nand">NAND only</option>
-        <option value="nor">NOR only</option>
-      </select>
+  <section id="results" class="results-section hidden" aria-labelledby="resultsHeading">
+    <div class="section-heading">
+      <h2 id="resultsHeading">Results</h2>
     </div>
-    <div id="circuitWrap"></div>
-    <p class="note" id="circuitNote"></p>
-  </div>
+    <div class="results-grid">
 
+      <!-- MINIMIZED FORMS -->
+      <article class="card result-card result-primary">
+        <div class="card-header">
+          <h3>Minimized Forms</h3>
+        </div>
+        <div class="card-body forms-grid">
+          <div class="result-field">
+            <div class="result-label">SOP Form <span class="label-detail">sum of products</span></div>
+            <div class="expr" id="sopExpr"></div>
+          </div>
+          <div class="result-field">
+            <div class="result-label">POS Form <span class="label-detail">product of sums</span></div>
+            <div class="expr" id="posExpr"></div>
+          </div>
+        </div>
+      </article>
+
+      <!-- SOURCE REPRESENTATION -->
+      <article class="card result-card result-source" id="sourceResultCard">
+        <div class="card-header">
+          <h3 id="sourceResultHeading">Truth Table</h3>
+        </div>
+        <div class="card-body">
+          <div class="data-panel" id="truthTableResultWrap"></div>
+          <div class="canonical-output-grid hidden" id="canonicalTermsResultWrap">
+            <div class="canonical-output-field">
+              <div class="result-label">Minterm Form</div>
+              <div class="canonical-expression" id="canonicalMinterms"></div>
+            </div>
+            <div class="canonical-output-field">
+              <div class="result-label">Maxterm Form</div>
+              <div class="canonical-expression" id="canonicalMaxterms"></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- KARNAUGH ANALYSIS -->
+      <article class="card result-card result-minimization">
+        <div class="card-header">
+          <h3>Karnaugh Analysis</h3>
+          <span class="header-metadata">Quine–McCluskey</span>
+        </div>
+        <div class="card-body minimization-layout">
+          <section class="minimization-panel kmap-panel" aria-labelledby="kmapHeading">
+            <h4 id="kmapHeading">Karnaugh Map</h4>
+            <div class="data-panel" id="kmapWrap"></div>
+          </section>
+          <section class="minimization-panel grouping-panel" aria-labelledby="groupingHeading">
+            <h4 id="groupingHeading">Grouping Analysis</h4>
+            <div class="analysis-grid">
+              <section class="analysis-panel" aria-labelledby="sopImplicantsHeading">
+                <h4 id="sopImplicantsHeading">SOP Implicants</h4>
+                <div class="steps" id="sopSteps"></div>
+              </section>
+              <section class="analysis-panel" aria-labelledby="posImplicantsHeading">
+                <h4 id="posImplicantsHeading">POS Implicants</h4>
+                <div class="steps" id="posSteps"></div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </article>
+
+      <!-- CIRCUIT -->
+      <article class="card result-card result-circuit">
+        <div class="card-header">
+          <h3>Circuit Implementation</h3>
+        </div>
+        <div class="card-body">
+          <div class="control-strip">
+            <label class="field-label" for="gateModeSelect">Gate Basis</label>
+            <select id="gateModeSelect" onchange="setGateMode(this.value)">
+              <option value="simplified" selected>Simplified (mixed gates)</option>
+              <option value="basic">AND / OR / NOT only</option>
+              <option value="nand">NAND only</option>
+              <option value="nor">NOR only</option>
+            </select>
+          </div>
+          <div class="circuit-panel" id="circuitWrap"></div>
+          <p class="metadata-footer" id="circuitNote"></p>
+        </div>
+      </article>
+    </div>
+  </section>
+</main>
 </div>
 
 <script src="js/expression.js"></script>
