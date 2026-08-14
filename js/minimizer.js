@@ -54,7 +54,6 @@ function renderKmap(){
     html += '</tr>';
   });
   html += '</table>';
-  html += `<p class="note">Rows: ${rowVars.join('')}, Columns: ${colVars.join('')} (Gray-code ordered so adjacent cells differ by one bit).</p>`;
   wrap.innerHTML = html;
 }
 

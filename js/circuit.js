@@ -177,8 +177,8 @@ function buildCircuitGraph(mode){
   let rootId=null, constMsg=null;
 
   if(mode==='basic' || mode==='simplified'){
-    if(sopIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
-    else if(sopIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
+    if(sopIsConst0) constMsg = 'The output is always 0, so no gates are needed.';
+    else if(sopIsConst1) constMsg = 'The output is always 1, so no gates are needed.';
     else {
       let termIds;
       if(mode==='simplified'){
@@ -197,12 +197,12 @@ function buildCircuitGraph(mode){
       rootId = buildBalanced(termIds, 'OR');
     }
   } else if(mode==='nand'){
-    if(sopIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
-    else if(sopIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
+    if(sopIsConst0) constMsg = 'The output is always 0, so no gates are needed.';
+    else if(sopIsConst1) constMsg = 'The output is always 1, so no gates are needed.';
     else rootId = materializeNand(buildExprTree(sopTerms, 'AND', 'OR'), false);
   } else if(mode==='nor'){
-    if(posIsConst1) constMsg = 'Constant 1 — F is always 1, no gates needed.';
-    else if(posIsConst0) constMsg = 'Constant 0 — F is always 0, no gates needed.';
+    if(posIsConst1) constMsg = 'The output is always 1, so no gates are needed.';
+    else if(posIsConst0) constMsg = 'The output is always 0, so no gates are needed.';
     else rootId = materializeNor(buildExprTree(posFactors, 'OR', 'AND'), false);
   }
 
@@ -474,10 +474,10 @@ function setGateMode(mode){
 }
 
 const GATE_MODE_NOTES = {
-  simplified: 'Simplified: a minimal 2-input circuit chosen freely from AND, OR, XOR, NOT, NAND and NOR — XOR/XNOR patterns in the SOP are detected and collapsed into a single gate where possible.',
-  basic: 'Basic gates: realized using only 2-input AND / OR gates plus inverters (NOT), directly from the minimized SOP — one shared inverter per complemented variable, reused wherever it\u2019s needed.',
-  nand: 'NAND only: every AND/OR gate is replaced by an equivalent 2-input NAND sub-circuit via consistent De Morgan bubble-pushing (valid at any tree depth, not just a 2-level SOP), including NAND-as-inverter (tied inputs) for complemented literals.',
-  nor: 'NOR only: every OR/AND gate of the POS realization is replaced by an equivalent 2-input NOR sub-circuit via consistent De Morgan bubble-pushing, including NOR-as-inverter (tied inputs) for complemented literals.'
+  simplified: 'Uses a practical mix of gates to keep the circuit simple.',
+  basic: 'Uses only AND, OR, and NOT gates.',
+  nand: 'Builds the whole circuit with NAND gates.',
+  nor: 'Builds the whole circuit with NOR gates.'
 };
 
 function drawCircuit(){

@@ -9,35 +9,83 @@
 /* ============================================================
    STATE
 ============================================================ */
-let numVars = 3;
-let varNames = ['A','B','C'];
+let numVars = 2;
+let varNames = ['A','B'];
 let truth = []; // array of {vals:[0/1,...], out: 0|1|'X'}
 let lastResult = null; // {sopTerms, posTerms} from the last Generate
 let gateMode = 'simplified';
+let inputMode = 'truth';
 
 /* ============================================================
    TABS / VAR COUNT
 ============================================================ */
 function switchTab(which){
-  document.getElementById('tab-truth').classList.toggle('active', which==='truth');
-  document.getElementById('tab-expr').classList.toggle('active', which==='expr');
-  document.getElementById('pane-truth').classList.toggle('hidden', which!=='truth');
-  document.getElementById('pane-expr').classList.toggle('hidden', which!=='expr');
+  inputMode = which;
+  ['truth','expr','terms'].forEach(mode=>{
+    const selected = mode===which;
+    const tab = document.getElementById(`tab-${mode}`);
+    tab.classList.toggle('active', selected);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(`pane-${mode}`).classList.toggle('hidden', !selected);
+  });
 }
+
+document.querySelector('.tabs').addEventListener('keydown', e=>{
+  if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) return;
+  const modes = ['truth','expr','terms'];
+  let next = modes.indexOf(inputMode);
+  if(e.key==='ArrowLeft') next=(next+modes.length-1)%modes.length;
+  if(e.key==='ArrowRight') next=(next+1)%modes.length;
+  if(e.key==='Home') next=0;
+  if(e.key==='End') next=modes.length-1;
+  e.preventDefault();
+  switchTab(modes[next]);
+  document.getElementById(`tab-${modes[next]}`).focus();
+});
 
 function onVarCountChange(){
   numVars = parseInt(document.getElementById('numVars').value);
   varNames = ['A','B','C','D','E','F'].slice(0,numVars);
   buildTruthTableUI();
   setExprAutoNote('');
+  setTermsNote('');
 }
 
-function setExprAutoNote(msg){
+function setTermsNote(msg, isError, inputId){
+  const el = document.getElementById('termsNote');
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+  el.classList.toggle('error', !!isError);
+  ['termsInput','dontCaresInput'].forEach(id=>{
+    const invalid = !!isError && (!inputId || inputId===id);
+    document.getElementById(id).setAttribute('aria-invalid', String(invalid));
+  });
+}
+
+function updateTermNotation(){
+  const kind = document.querySelector('input[name="termKind"]:checked').value;
+  document.getElementById('termsPrefix').textContent = kind==='minterms' ? 'Σm(' : 'ΠM(';
+  if(document.getElementById('termsNote').classList.contains('error')) setTermsNote('');
+}
+
+function setExprAutoNote(msg, isError){
   const el = document.getElementById('exprAutoNote');
   if(!el) return;
   el.textContent = msg;
   el.classList.toggle('hidden', !msg);
+  el.classList.toggle('error', !!isError);
+  document.getElementById('exprInput').setAttribute('aria-invalid', String(!!isError));
 }
+
+document.getElementById('exprInput').addEventListener('input', ()=>{
+  if(document.getElementById('exprAutoNote').classList.contains('error')) setExprAutoNote('');
+});
+['termsInput','dontCaresInput'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>{
+    if(document.getElementById('termsNote').classList.contains('error')) setTermsNote('');
+  });
+});
 
 function buildTruthTableUI(){
   truth = [];
@@ -99,29 +147,49 @@ function cycleOut(i){
    MAIN GENERATE
 ============================================================ */
 function generateAll(){
-  const exprVisible = !document.getElementById('pane-expr').classList.contains('hidden');
-  if(exprVisible){
+  if(inputMode==='expr'){
     const expr = document.getElementById('exprInput').value.trim();
-    if(!expr){ alert('Enter an expression.'); return; }
+    if(!expr){ setExprAutoNote('Enter an expression using variables A to F.', true); return; }
     let exprInfo;
     try{
       exprInfo = buildTruthFromExpression(expr);
     }catch(e){
-      // A too-many-variables error is already a complete, specific message —
-      // don't bury it behind a generic "could not parse" prefix.
-      alert(e.isVarCountError ? e.message : ('Could not parse expression: '+e.message));
+      const message = e.isVarCountError || e.message==='Enter an expression using variables A to F.'
+        ? e.message
+        : 'Check the expression and try again.';
+      setExprAutoNote(message, true);
       return;
     }
     setExprAutoNote(exprInfo.autoIncreased
-      ? `Note: this expression uses ${exprInfo.usedVars.length} variables (${exprInfo.usedVars.join(', ')}), `+
-        `so the variable count was automatically increased to ${exprInfo.finalNumVars} to fit it.`
+      ? `Variable count changed to ${exprInfo.finalNumVars} to fit this expression.`
       : '');
     renderTruthTableUI(); // reflect into truth-table tab too
     // Also show the generated truth table alongside the results, for convenience.
     document.getElementById('truthTableResultWrap').innerHTML = buildTruthTableHTML(truth, false);
     document.getElementById('truthTableResultCard').classList.remove('hidden');
+  } else if(inputMode==='terms') {
+    const kind = document.querySelector('input[name="termKind"]:checked').value;
+    let termsInfo;
+    try{
+      termsInfo = buildTruthFromTerms(kind, document.getElementById('termsInput').value, document.getElementById('dontCaresInput').value);
+    }catch(e){
+      setTermsNote(e.message, true, e.inputId);
+      return;
+    }
+    numVars = termsInfo.finalNumVars;
+    varNames = ['A','B','C','D','E','F'].slice(0,numVars);
+    truth = termsInfo.truth;
+    ensureNumVarOption(numVars);
+    document.getElementById('numVars').value = String(numVars);
+    setTermsNote(termsInfo.autoIncreased
+      ? `Variable count changed to ${numVars} so index ${termsInfo.largestIndex} fits.`
+      : '', false);
+    renderTruthTableUI();
+    document.getElementById('truthTableResultWrap').innerHTML = buildTruthTableHTML(truth, false);
+    document.getElementById('truthTableResultCard').classList.remove('hidden');
   } else {
     setExprAutoNote('');
+    setTermsNote('');
     if(truth.length===0) buildTruthTableUI();
     document.getElementById('truthTableResultCard').classList.add('hidden');
   }
@@ -161,8 +229,8 @@ function generateAll(){
     const label = posFactorToString(termToSOPLiteral(pi.term));
     return `<b>${escapeHtml(label)}</b> — ${escapeHtml(groupBoxDescription(pi.term))}`;
   });
-  document.getElementById('sopSteps').innerHTML = sopGroupLines.join('<br>') || '(no 1s to group — function is 0)';
-  document.getElementById('posSteps').innerHTML = posGroupLines.join('<br>') || '(no 0s to group — function is 1)';
+  document.getElementById('sopSteps').innerHTML = sopGroupLines.join('<br>') || 'No SOP groups — the output is always 0.';
+  document.getElementById('posSteps').innerHTML = posGroupLines.join('<br>') || 'No POS groups — the output is always 1.';
 
   // render expressions
   const sopStr = ones.length===0 ? '0' : sopTerms.map(lits=>literalsToString(lits,false)).join(' + ');
