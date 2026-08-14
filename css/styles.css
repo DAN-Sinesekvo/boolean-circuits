@@ -1,0 +1,36 @@
+:root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --accent:#38bdf8;
+    --text:#e2e8f0; --muted:#94a3b8; --good:#4ade80; --bad:#f87171; --dc:#fbbf24;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);padding:24px;}
+  h1{font-size:1.5rem;margin-bottom:4px;}
+  .sub{color:var(--muted);margin-bottom:20px;font-size:.9rem;}
+  .card{background:var(--panel);border-radius:12px;padding:18px;margin-bottom:18px;box-shadow:0 2px 8px rgba(0,0,0,.3);}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
+  label{font-size:.85rem;color:var(--muted);}
+  select,input[type=text],button{
+    background:var(--panel2);color:var(--text);border:1px solid #334155;border-radius:8px;
+    padding:8px 12px;font-size:.9rem;
+  }
+  button{cursor:pointer;background:var(--accent);color:#04202f;font-weight:600;border:none;}
+  button:hover{opacity:.9;}
+  .tabs{display:flex;gap:8px;margin-bottom:12px;}
+  .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:var(--panel2);cursor:pointer;color:var(--muted);}
+  .tab.active{background:var(--accent);color:#04202f;font-weight:600;}
+  .hidden{display:none !important;}
+  table{border-collapse:collapse;margin-top:10px;}
+  td,th{border:1px solid #334155;padding:6px 12px;text-align:center;font-size:.85rem;}
+  th{background:var(--panel2);}
+  td.outcell{cursor:pointer;font-weight:700;user-select:none;}
+  td.v0{color:var(--bad);}
+  td.v1{color:var(--good);}
+  td.vx{color:var(--dc);}
+  .kmapcell{cursor:pointer;font-weight:700;min-width:34px;}
+  code{background:var(--panel2);padding:2px 6px;border-radius:4px;}
+  .expr{font-size:1.15rem;background:var(--panel2);padding:10px 14px;border-radius:8px;display:inline-block;margin-top:6px;}
+  .steps{font-size:.82rem;color:var(--muted);line-height:1.6;max-height:260px;overflow:auto;background:var(--panel2);padding:10px;border-radius:8px;margin-top:8px;}
+  .gatebar{display:flex;gap:8px;margin-bottom:10px;}
+  svg{background:#0b1220;border-radius:8px;border:1px solid #334155;}
+  .note{font-size:.78rem;color:var(--muted);margin-top:6px;}
+  .flex-cols{display:flex;gap:24px;flex-wrap:wrap;}
