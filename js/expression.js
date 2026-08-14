@@ -103,11 +103,10 @@ function ensureNumVarOption(n){
 
 function buildTruthFromExpression(expr){
   const usedVars = detectVarsInExpr(expr); // sorted alphabetically, e.g. ['A','C']
-  if(usedVars.length===0) throw new Error('No variables found in expression.');
+  if(usedVars.length===0) throw new Error('Enter an expression using variables A to F.');
   if(usedVars.length>6){
     const err = new Error(
-      `This expression uses ${usedVars.length} variables (${usedVars.join(', ')}), `+
-      `but this tool supports a maximum of 6 variables. Please simplify the expression.`
+      `Use no more than 6 variables. Found: ${usedVars.join(', ')}.`
     );
     err.isVarCountError = true;
     throw err;
