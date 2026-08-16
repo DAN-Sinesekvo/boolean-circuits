@@ -161,20 +161,55 @@ function selectEssential(piList, requiredMinterms, stepsLog){
     }
   });
 
-  // greedy cover remaining
-  let remaining = requiredMinterms.filter(m=>!covered.has(m));
-  while(remaining.length>0){
-    let best=null, bestCount=-1;
-    for(const pi of piList){
-      if(chosen.includes(pi)) continue;
-      const cnt = remaining.filter(m=>pi.minterms.has(m)).length;
-      if(cnt>bestCount){ bestCount=cnt; best=pi; }
-    }
-    if(!best || bestCount<=0) break;
-    chosen.push(best);
-    stepsLog.push(`Greedily selecting ${best.term} to cover remaining minterms: ${remaining.filter(m=>best.minterms.has(m)).join(',')}`);
-    remaining = remaining.filter(m=>!best.minterms.has(m));
-  }
+  // Petrick's method for the minterms left after the essential-PI pass. Each
+  // uncovered minterm contributes a sum of the PIs that cover it; multiplying
+  // those sums produces every possible cover. Products are represented as sorted
+  // arrays of piList indexes, which makes duplicate removal deterministic.
+  const remaining = requiredMinterms.filter(m=>!covered.has(m));
+  if(remaining.length===0) return chosen;
+
+  const chosenSet = new Set(chosen);
+  const clauses = remaining.map(m=>{
+    const clause = [];
+    piList.forEach((pi,index)=>{
+      if(!chosenSet.has(pi) && pi.minterms.has(m)) clause.push(index);
+    });
+    if(clause.length===0) throw new Error(`No prime implicant covers required minterm ${m}.`);
+    return clause;
+  });
+
+  let products = [[]];
+  clauses.forEach(clause=>{
+    const unique = new Map();
+    products.forEach(product=>clause.forEach(index=>{
+      const expanded = product.includes(index)
+        ? product.slice()
+        : product.concat(index).sort((a,b)=>a-b);
+      unique.set(expanded.join(','), expanded);
+    }));
+
+    // Boolean absorption: P + P.Q = P. Once a product is a subset of another,
+    // the superset can never win on term count or literal count.
+    const candidates = [...unique.values()].sort((a,b)=>a.length-b.length ||
+      a.join(',').localeCompare(b.join(',')));
+    const reduced = [];
+    candidates.forEach(candidate=>{
+      const absorbed = reduced.some(product=>product.every(index=>candidate.includes(index)));
+      if(!absorbed) reduced.push(candidate);
+    });
+    products = reduced;
+  });
+
+  const literalCount = product=>product.reduce((sum,index)=>
+    sum + [...piList[index].term].filter(bit=>bit!=='-').length, 0);
+  const lexicalKey = product=>product.map(index=>piList[index].term).sort().join('|');
+  products.sort((a,b)=>a.length-b.length || literalCount(a)-literalCount(b) ||
+    lexicalKey(a).localeCompare(lexicalKey(b)));
+
+  const petrickChoice = products[0];
+  petrickChoice.forEach(index=>chosen.push(piList[index]));
+  stepsLog.push(`Petrick's method selected ${petrickChoice.map(index=>piList[index].term).join(', ')} ` +
+    `to cover remaining minterms: ${remaining.join(',')}.`);
   return chosen;
 }
 
